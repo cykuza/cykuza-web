@@ -11,7 +11,7 @@ export default function Footer() {
     <div className="flex flex-col md:flex-row justify-between items-center gap-4">
      {/* GitHub Icon */}
      <a
-      href="https://github.com/cykuza/cukuza-web"
+      href="https://github.com/cykuza/cykuza-web"
       target="_blank"
       rel="noopener noreferrer"
       className="inline-flex items-center justify-center text-neutral-400 hover:text-white transition-colors"
