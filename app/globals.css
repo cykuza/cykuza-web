@@ -1,0 +1,82 @@
+@import url('https://fonts.googleapis.com/css2?family=Oxygen+Mono&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@font-face {
+  font-family: 'Hack', monospace;
+  src: url('https://cdn.jsdelivr.net/npm/hack-font@3/build/web/hack.css') format('truetype');
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --foreground-rgb: 255, 255, 255;
+}
+
+* {
+  font-family: 'Hack', 'Oxygen Mono', monospace;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: #000000;
+  position: relative;
+  overflow-x: hidden;
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+/* Monospace font for .font-mono class */
+.font-mono {
+  font-family: 'Hack', 'Oxygen Mono', 'JetBrains Mono', 'Fragment Mono', monospace;
+}
+
+/* Custom scrollbar - clean style */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #000000;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #333333;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #444444;
+}
+
+/* Custom utility classes */
+@layer utilities {
+  .cyber-link {
+    color: #ffffff;
+    text-decoration: none;
+    transition: color 0.2s ease;
+    position: relative;
+  }
+
+  .cyber-link:hover {
+    color: rgba(255, 255, 255, 0.8);
+  }
+
+  .cyber-link::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    left: 0;
+    width: 0;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.6);
+    transition: width 0.2s ease;
+  }
+
+  .cyber-link:hover::after {
+    width: 100%;
+  }
+}
