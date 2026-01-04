@@ -102,7 +102,7 @@ export default function AddressPage({ params }: { params: Promise<{ addr: string
      balance: balance.confirmed + balance.unconfirmed,
      confirmed: balance.confirmed,
      unconfirmed: balance.unconfirmed,
-     history: history,
+     history: [...history].reverse(),
      historyError: historyError || undefined,
     });
     setError(null);
