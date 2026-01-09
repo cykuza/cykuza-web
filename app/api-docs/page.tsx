@@ -54,12 +54,12 @@ export default function ApiDocsPage() {
     <section className="rounded-2xl border border-white/14 bg-neutral-800/75 p-6">
      <h2 className="text-xl font-bold mb-4 text-white border-b border-white/14 pb-2">Get Block</h2>
      <p className="text-neutral-200 mb-2">Fetch block data by height or hash.</p>
-     <div className="bg-neutral-800/75 p-4 rounded-2xl border border-white/14 mb-2">
-      <code className="text-green-400">
+     <div className="bg-neutral-800/75 p-4 rounded-2xl border border-white/14 mb-2 overflow-x-auto">
+      <code className="text-green-400 break-all">
        GET /api/block?height=123&network=mainnet
       </code>
       <br />
-      <code className="text-green-400">
+      <code className="text-green-400 break-all">
        GET /api/block?hash=abc123...&network=mainnet
       </code>
      </div>
@@ -89,8 +89,8 @@ export default function ApiDocsPage() {
     <section className="rounded-2xl border border-white/14 bg-neutral-800/75 p-6">
      <h2 className="text-xl font-bold mb-4 text-white border-b border-white/14 pb-2">Get Transaction</h2>
      <p className="text-neutral-200 mb-2">Fetch transaction data by hash.</p>
-     <div className="bg-neutral-800/75 p-4 rounded-2xl border border-white/14 mb-2">
-      <code className="text-green-400">
+     <div className="bg-neutral-800/75 p-4 rounded-2xl border border-white/14 mb-2 overflow-x-auto">
+      <code className="text-green-400 break-all">
        GET /api/tx?hash=abc123...&network=mainnet&verbose=true
       </code>
      </div>
@@ -123,9 +123,9 @@ export default function ApiDocsPage() {
     <section className="rounded-2xl border border-white/14 bg-neutral-800/75 p-6">
      <h2 className="text-xl font-bold mb-4 text-white border-b border-white/14 pb-2">Get Address</h2>
      <p className="text-neutral-200 mb-2">Fetch address balance and transaction history.</p>
-     <div className="bg-neutral-800/75 p-4 rounded-2xl border border-white/14 mb-2">
-      <code className="text-green-400">
-       GET /api/address?address=LYb...&network=mainnet
+     <div className="bg-neutral-800/75 p-4 rounded-2xl border border-white/14 mb-2 overflow-x-auto">
+      <code className="text-green-400 break-all">
+       GET /api/address?address=CYb...&network=mainnet
       </code>
      </div>
      <h3 className="text-lg font-semibold mt-4 mb-2 text-white">Parameters</h3>
@@ -149,8 +149,8 @@ export default function ApiDocsPage() {
     <section className="rounded-2xl border border-white/14 bg-neutral-800/75 p-6">
      <h2 className="text-xl font-bold mb-4 text-white border-b border-white/14 pb-2">Network Stats</h2>
      <p className="text-neutral-200 mb-2">Get current network statistics.</p>
-     <div className="bg-neutral-800/75 p-4 rounded-2xl border border-white/14 mb-2">
-      <code className="text-green-400">
+     <div className="bg-neutral-800/75 p-4 rounded-2xl border border-white/14 mb-2 overflow-x-auto">
+      <code className="text-green-400 break-all">
        GET /api/network-stats?network=mainnet
       </code>
      </div>
@@ -172,8 +172,8 @@ export default function ApiDocsPage() {
     <section className="rounded-2xl border border-white/14 bg-neutral-800/75 p-6">
      <h2 className="text-xl font-bold mb-4 text-white border-b border-white/14 pb-2">Latest Blocks</h2>
      <p className="text-neutral-200 mb-2">Get the most recent blocks.</p>
-     <div className="bg-neutral-800/75 p-4 rounded-2xl border border-white/14 mb-2">
-      <code className="text-green-400">
+     <div className="bg-neutral-800/75 p-4 rounded-2xl border border-white/14 mb-2 overflow-x-auto">
+      <code className="text-green-400 break-all">
        GET /api/latest-blocks?network=mainnet&limit=11
       </code>
      </div>
@@ -183,8 +183,8 @@ export default function ApiDocsPage() {
     <section className="rounded-2xl border border-white/14 bg-neutral-800/75 p-6">
      <h2 className="text-xl font-bold mb-4 text-white border-b border-white/14 pb-2">Latest Transactions</h2>
      <p className="text-neutral-200 mb-2">Get the most recent transactions.</p>
-     <div className="bg-neutral-800/75 p-4 rounded-2xl border border-white/14 mb-2">
-      <code className="text-green-400">
+     <div className="bg-neutral-800/75 p-4 rounded-2xl border border-white/14 mb-2 overflow-x-auto">
+      <code className="text-green-400 break-all">
        GET /api/latest-transactions?network=mainnet&limit=11
       </code>
      </div>
