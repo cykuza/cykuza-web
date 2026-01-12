@@ -136,7 +136,7 @@ export default function ApiDocsPage() {
      <h3 className="text-lg font-semibold mt-4 mb-2 text-white">Response</h3>
      <pre className="bg-neutral-800/75 p-4 rounded-2xl border border-white/14 overflow-x-auto text-sm text-neutral-200">
 {`{
- "address": "LYb...",
+ "address": "CYb...",
  "balance": 100000000,
  "confirmed": 100000000,
  "unconfirmed": 0,
