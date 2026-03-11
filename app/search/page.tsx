@@ -22,16 +22,33 @@ function SearchContent() {
 
   const trimmedQuery = query.trim();
 
-  // Determine type and redirect
-  if (isBlockHeight(trimmedQuery)) {
-   router.push(`/block/${trimmedQuery}?network=${network}`);
-  } else if (isHex(trimmedQuery) && trimmedQuery.length === 64) {
-   // Could be block hash or tx hash - try transaction first
-   router.push(`/tx/${trimmedQuery}?network=${network}`);
-  } else {
-   // Assume address
-   router.push(`/address/${trimmedQuery}?network=${network}`);
-  }
+  const redirect = async () => {
+   if (isBlockHeight(trimmedQuery)) {
+    router.push(`/block/${trimmedQuery}?network=${network}`);
+    return;
+   }
+   if (isHex(trimmedQuery) && trimmedQuery.length === 64) {
+    // Same shape as txid and block hash — try block API first, then tx
+    try {
+     const blockRes = await fetch(
+      `/api/block?hash=${encodeURIComponent(trimmedQuery)}&network=${network}`
+     );
+     if (blockRes.ok) {
+      router.push(`/block/${trimmedQuery}?network=${network}`);
+     } else if (blockRes.status === 404) {
+      router.push(`/tx/${trimmedQuery}?network=${network}`);
+     } else {
+      router.push(`/block/${trimmedQuery}?network=${network}`);
+     }
+    } catch {
+     router.push(`/block/${trimmedQuery}?network=${network}`);
+    }
+    return;
+   }
+   router.push(`/address/${encodeURIComponent(trimmedQuery)}?network=${network}`);
+  };
+
+  redirect();
  }, [query, network, router]);
 
  return (

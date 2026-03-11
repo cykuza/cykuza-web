@@ -78,7 +78,7 @@ export default function Header() {
   };
  }, [showNetworkDropdown]);
 
- const handleSearch = (e: React.FormEvent) => {
+ const handleSearch = async (e: React.FormEvent) => {
   e.preventDefault();
   if (!searchQuery.trim()) return;
 
@@ -88,13 +88,28 @@ export default function Header() {
   if (isBlockHeight(query)) {
    router.push(`/block/${query}?network=${network}`);
   } else if (isHex(query) && query.length === 64) {
-   // Could be block hash or tx hash - try transaction first
-   router.push(`/tx/${query}?network=${network}`);
+   // Same shape as txid and block hash — resolve via API: block first, then tx
+   try {
+    const blockRes = await fetch(
+     `/api/block?hash=${encodeURIComponent(query)}&network=${network}`
+    );
+    // 200 = block exists; 404 = not a known block in range — treat as txid
+    if (blockRes.ok) {
+     router.push(`/block/${query}?network=${network}`);
+    } else if (blockRes.status === 404) {
+     router.push(`/tx/${query}?network=${network}`);
+    } else {
+     // Rate limit / server error — open block page; it resolves by hash client-side too
+     router.push(`/block/${query}?network=${network}`);
+    }
+   } catch {
+    router.push(`/block/${query}?network=${network}`);
+   }
   } else {
    // Assume address
-   router.push(`/address/${query}?network=${network}`);
+   router.push(`/address/${encodeURIComponent(query)}?network=${network}`);
   }
-  
+
   // Close mobile search after navigation
   setShowMobileSearch(false);
  };
