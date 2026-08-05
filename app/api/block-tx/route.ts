@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimit } from '../rate-limit';
-import { callElectrumX } from '@/lib/electrumServer';
+import { getTxidFromPos } from '@/lib/electrum/rpc';
 import { z } from 'zod';
 
 const querySchema = z.object({
@@ -27,25 +27,14 @@ export async function GET(req: NextRequest) {
     });
 
     try {
-      const txHash = await callElectrumX(
-        query.network,
-        'blockchain.transaction.id_from_pos',
-        [query.height, query.txPos, false]
-      );
+      const txid = await getTxidFromPos(query.network, query.height, query.txPos);
 
-      if (typeof txHash === 'string' && txHash.length === 64 && /^[a-fA-F0-9]{64}$/.test(txHash)) {
-        return NextResponse.json({ txid: txHash }, {
-          headers: {
-            'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
-          },
-        });
-      } else {
-        return NextResponse.json(
-          { error: 'Invalid transaction hash' },
-          { status: 400 }
-        );
-      }
-    } catch (error) {
+      return NextResponse.json({ txid }, {
+        headers: {
+          'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+        },
+      });
+    } catch {
       return NextResponse.json(
         { error: 'Transaction not found at this position' },
         { status: 404 }

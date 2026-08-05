@@ -1,6 +1,11 @@
 import { formatSatoshi, parseBlockHeader } from './utils';
 import * as bitcoin from 'bitcoinjs-lib';
 import { getNetwork } from './cyberyenNetwork';
+import type {
+  ElectrumXInput,
+  ElectrumXOutput,
+  ElectrumXTransaction,
+} from './electrum/protocol';
 
 export interface MwebInput {
   type: 'mweb_input';
@@ -100,61 +105,6 @@ function extractAddressFromScript(scriptHex: string, networkType: string = 'main
     // Script doesn't match a standard address format
     return undefined;
   }
-}
-
-// Type definitions for ElectrumX transaction data
-export interface ElectrumXInput {
-  txid?: string;
-  vout?: number;
-  prevout_hash?: string;
-  prevout_n?: number;
-  scriptSig?: { hex?: string; asm?: string };
-  script_sig?: string;
-  sequence?: number;
-  coinbase?: string | null;
-  address?: string;
-  value?: number;
-  prevout?: {
-    value?: number;
-    scriptPubKey?: {
-      hex?: string;
-      addresses?: string[];
-    };
-  };
-}
-
-export interface ElectrumXOutput {
-  value?: number;
-  n?: number;
-  scriptPubKey?: {
-    hex?: string;
-    addresses?: string[];
-    type?: string;
-  };
-  script_pubkey?: string;
-  address?: string;
-}
-
-interface ElectrumXMwebExtension {
-  inputs?: Array<{ commitment: string }>;
-  outputs?: Array<{ commitment: string; value?: number }>;
-  kernel_offset?: number;
-  kernel?: string;
-}
-
-export interface ElectrumXTransaction {
-  txid?: string;
-  hash?: string;
-  version?: number;
-  size?: number;
-  vsize?: number;
-  weight?: number;
-  locktime?: number;
-  vin?: ElectrumXInput[];
-  vout?: ElectrumXOutput[];
-  mweb_extension?: ElectrumXMwebExtension | null;
-  fee?: number;
-  hex?: string;
 }
 
 export function parseTransaction(txData: ElectrumXTransaction, network: string = 'mainnet'): ParsedTransaction {

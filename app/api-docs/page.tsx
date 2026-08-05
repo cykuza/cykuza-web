@@ -91,14 +91,13 @@ export default function ApiDocsPage() {
      <p className="text-neutral-200 mb-2">Fetch transaction data by hash.</p>
      <div className="bg-neutral-800/75 p-4 rounded-2xl border border-white/14 mb-2 overflow-x-auto">
       <code className="text-green-400 break-all">
-       GET /api/tx?hash=abc123...&network=mainnet&verbose=true
+       GET /api/tx?hash=abc123...&network=mainnet
       </code>
      </div>
      <h3 className="text-lg font-semibold mt-4 mb-2 text-white">Parameters</h3>
      <ul className="list-disc list-inside text-neutral-200 space-y-1">
       <li><code className="bg-neutral-800/75 px-2 py-1 rounded-xl border border-white/14">hash</code> (required): Transaction hash (64 hex characters)</li>
-      <li><code className="bg-neutral-800/75 px-2 py-1 rounded-xl border border-white/14">network</code> (optional): Network type (default: mainnet)</li>
-      <li><code className="bg-neutral-800/75 px-2 py-1 rounded-xl border border-white/14">verbose</code> (optional): Return detailed transaction data (default: false)</li>
+     <li><code className="bg-neutral-800/75 px-2 py-1 rounded-xl border border-white/14">network</code> (optional): Network type (default: mainnet)</li>
      </ul>
      <h3 className="text-lg font-semibold mt-4 mb-2 text-white">Response</h3>
      <pre className="bg-neutral-800/75 p-4 rounded-2xl border border-white/14 overflow-x-auto text-sm text-neutral-200">

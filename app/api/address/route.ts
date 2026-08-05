@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimit } from '../rate-limit';
 import { addressSchema } from '@/lib/utils';
-import { callElectrumX } from '@/lib/electrumServer';
+import {
+  getScripthashBalance,
+  getScripthashHistory,
+  getScripthashMempool,
+} from '@/lib/electrum/rpc';
+import type { ScripthashHistoryEntry } from '@/lib/electrum/protocol';
 import { z } from 'zod';
 import * as bitcoin from 'bitcoinjs-lib';
 import { getNetwork } from '@/lib/cyberyenNetwork';
@@ -48,11 +53,7 @@ export async function GET(req: NextRequest) {
     // Get balance first (this usually works even for addresses with large history)
     let balance;
     try {
-      balance = await callElectrumX(
-        query.network,
-        'blockchain.scripthash.get_balance',
-        [scriptHash]
-      );
+      balance = await getScripthashBalance(query.network, scriptHash);
     } catch (error) {
       if (process.env.NODE_ENV === 'development') {
         console.error('Error fetching balance:', error);
@@ -61,28 +62,18 @@ export async function GET(req: NextRequest) {
     }
 
     // Try to get history, but handle "history too large" error gracefully
-    let history: unknown[] = [];
+    let history: ScripthashHistoryEntry[] = [];
     let historyError: string | null = null;
     try {
-      const historyResult = await callElectrumX(
-        query.network,
-        'blockchain.scripthash.get_history',
-        [scriptHash]
-      );
-      history = Array.isArray(historyResult) ? historyResult : [];
+      history = await getScripthashHistory(query.network, scriptHash);
     } catch (error: unknown) {
       const errorMessage = (error instanceof Error ? error.message : String(error)) || String(error);
       if (errorMessage.includes('history too large') || errorMessage.includes('too large')) {
         historyError = 'This address has too many transactions to display. Please use a block explorer with pagination support.';
         // Try to get just mempool transactions as a fallback
         try {
-          const mempool = await callElectrumX(
-            query.network,
-            'blockchain.scripthash.get_mempool',
-            [scriptHash]
-          ) || [];
-          history = mempool;
-        } catch (mempoolError) {
+          history = await getScripthashMempool(query.network, scriptHash);
+        } catch {
           // If mempool also fails, just return empty history
           history = [];
         }
@@ -97,7 +88,7 @@ export async function GET(req: NextRequest) {
       balance: balance.confirmed + balance.unconfirmed,
       confirmed: balance.confirmed,
       unconfirmed: balance.unconfirmed,
-      history: history || [],
+      history,
       historyError: historyError || undefined,
     }, {
       headers: {

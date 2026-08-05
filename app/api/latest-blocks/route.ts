@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimit } from '../rate-limit';
-import { callElectrumX } from '@/lib/electrumServer';
+import { getChainTip } from '@/lib/electrum/rpc';
 import { fetchBlockByHeight } from '@/lib/blockParser';
 import { z } from 'zod';
 
@@ -20,7 +20,6 @@ interface BlockResult {
   nonce?: number;
   size?: number;
   tx_count?: number;
-  mweb?: unknown;
 }
 
 export async function GET(req: NextRequest) {
@@ -39,11 +38,7 @@ export async function GET(req: NextRequest) {
       limit: searchParams.get('limit'),
     });
 
-    // Get current tip - blockchain.headers.subscribe returns an object with height and hex, or just a number
-    const tip = await callElectrumX(query.network, 'blockchain.headers.subscribe', []);
-    const currentHeight = (tip && typeof tip === 'object' && 'height' in tip) 
-      ? tip.height 
-      : (typeof tip === 'number' ? tip : 0);
+    const { height: currentHeight } = await getChainTip(query.network);
 
     // Fetch blocks in parallel for better performance
     const blockPromises = [];
@@ -66,7 +61,6 @@ export async function GET(req: NextRequest) {
               nonce: parsed.nonce,
               size: parsed.size,
               tx_count: parsed.tx_count,
-              mweb: parsed.mweb,
             } as BlockResult;
           } catch (error) {
             // Skip if block not found

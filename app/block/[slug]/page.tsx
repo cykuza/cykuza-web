@@ -4,7 +4,8 @@ import { use, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { formatTimestamp, formatBytes, truncateHash, isBlockHeight, formatSatoshi, parseBlockHeader, parseTxCountFromBlockHex } from '@/lib/utils';
-import { parseBlock, ElectrumXTransaction, ElectrumXOutput } from '@/lib/parsers';
+import { parseBlock } from '@/lib/parsers';
+import type { ElectrumXOutput, ElectrumXTransaction } from '@/lib/electrum/protocol';
 import { useElectrumExplorer } from '@/hooks/useElectrumExplorer';
 
 interface BlockData {

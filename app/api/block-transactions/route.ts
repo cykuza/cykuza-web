@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimit } from '../rate-limit';
-import { callElectrumX } from '@/lib/electrumServer';
-import { ElectrumXTransaction, ElectrumXOutput } from '@/lib/parsers';
+import { getTransaction, getTxidFromPos } from '@/lib/electrum/rpc';
+import type {
+  ElectrumXInput,
+  ElectrumXOutput,
+  ElectrumXTransaction,
+} from '@/lib/electrum/protocol';
 import { z } from 'zod';
 
 const querySchema = z.object({
@@ -14,6 +18,52 @@ interface TransactionResult {
   txid: string;
   value: number;
   isMweb: boolean;
+}
+
+const SATS_PER_COIN = 100_000_000;
+
+function collectInputAddresses(inputs: ElectrumXInput[] | undefined): Set<string> {
+  const addresses = new Set<string>();
+  for (const input of inputs ?? []) {
+    for (const addr of input.prevout?.scriptPubKey?.addresses ?? []) {
+      if (addr) addresses.add(addr);
+    }
+  }
+  return addresses;
+}
+
+function outputAddresses(output: ElectrumXOutput): string[] {
+  const addresses = [...(output.scriptPubKey?.addresses ?? [])];
+  if (output.address) addresses.push(output.address);
+  return addresses;
+}
+
+/**
+ * Amount leaving the sender: outputs that do not return to an input address.
+ * Without resolvable input addresses, the first output is the best proxy.
+ */
+function calculateSentValue(tx: ElectrumXTransaction): number {
+  const outputs = tx.vout ?? [];
+  if (outputs.length === 0) return 0;
+
+  const firstOutputValue = Math.floor((outputs[0]?.value ?? 0) * SATS_PER_COIN);
+  const inputAddresses = collectInputAddresses(tx.vin);
+  if (inputAddresses.size === 0) {
+    return Math.max(firstOutputValue, 0);
+  }
+
+  const sent = outputs
+    .filter((out) => !outputAddresses(out).some((addr) => inputAddresses.has(addr)))
+    .reduce((sum, out) => sum + (out.value ?? 0) * SATS_PER_COIN, 0);
+
+  return sent > 0 ? Math.floor(sent) : Math.max(firstOutputValue, 0);
+}
+
+function isMwebTransaction(tx: ElectrumXTransaction): boolean {
+  if (tx.mweb_extension !== undefined && tx.mweb_extension !== null) return true;
+  return (tx.vout ?? []).some(
+    (out) => out.scriptPubKey?.type === 'witness_mweb_hogaddr'
+  );
 }
 
 export async function GET(req: NextRequest) {
@@ -39,19 +89,7 @@ export async function GET(req: NextRequest) {
     const txHashPromises = [];
     for (let txPos = 0; txPos < maxTxToCheck; txPos++) {
       txHashPromises.push(
-        callElectrumX(
-          query.network,
-          'blockchain.transaction.id_from_pos',
-          [query.height, txPos, false]
-        ).then(
-          (txHash) => {
-            if (typeof txHash === 'string' && txHash.length === 64 && /^[a-fA-F0-9]{64}$/.test(txHash)) {
-              return txHash;
-            }
-            return null;
-          },
-          () => null // Return null on error
-        )
+        getTxidFromPos(query.network, query.height, txPos).catch(() => null)
       );
     }
 
@@ -67,116 +105,16 @@ export async function GET(req: NextRequest) {
     }
 
     // Step 2: Fetch all transaction details in parallel
-    const txDetailPromises = validTxHashes.map((txid) =>
-      callElectrumX(
-        query.network,
-        'blockchain.transaction.get',
-        [txid, true] // verbose=true to get full transaction data
-      ).then(
-        (txData: unknown) => {
-          if (!txData || typeof txData !== 'object') {
-            return {
-              txid,
-              value: 0,
-              isMweb: false,
-            };
-          }
-
-          const tx = txData as ElectrumXTransaction;
-
-          // Calculate sent value (outputs to recipients, excluding change back to sender)
-          // ElectrumX returns values in CY, we need to convert to satoshis (multiply by 100,000,000)
-          const calculateSentValue = (): number => {
-            // Get all input addresses (sender addresses)
-            const inputAddresses = new Set<string>();
-            if (tx.vin && Array.isArray(tx.vin)) {
-              tx.vin.forEach((input: any) => {
-                // Check prevout for addresses
-                if (input.prevout?.scriptPubKey?.addresses && Array.isArray(input.prevout.scriptPubKey.addresses)) {
-                  input.prevout.scriptPubKey.addresses.forEach((addr: string) => {
-                    if (addr) inputAddresses.add(addr);
-                  });
-                }
-                // Also check direct address in prevout
-                if (input.prevout?.addresses && Array.isArray(input.prevout.addresses)) {
-                  input.prevout.addresses.forEach((addr: string) => {
-                    if (addr) inputAddresses.add(addr);
-                  });
-                }
-              });
-            }
-
-            // Get outputs
-            const outputs = tx.vout || [];
-            if (!Array.isArray(outputs) || outputs.length === 0) return 0;
-
-            // If we can't determine input addresses, use first output (usually the recipient)
-            if (inputAddresses.size === 0) {
-              const firstOutput = outputs[0];
-              const value = firstOutput?.value || 0;
-              return value > 0 ? Math.floor(value * 100000000) : 0;
-            }
-
-            // Sum outputs that don't match any input address (these are sent amounts, not change)
-            let sentValue = 0;
-            outputs.forEach((out: ElectrumXOutput) => {
-              const outputAddresses: string[] = [];
-              
-              // Get addresses from output
-              if (out.scriptPubKey?.addresses && Array.isArray(out.scriptPubKey.addresses)) {
-                outputAddresses.push(...out.scriptPubKey.addresses);
-              }
-              if (out.address) {
-                outputAddresses.push(out.address);
-              }
-
-              // Check if this output goes to a different address (not change)
-              const isChange = outputAddresses.some(addr => inputAddresses.has(addr));
-              
-              if (!isChange) {
-                const value = out.value || 0;
-                sentValue += value * 100000000;
-              }
-            });
-
-            // If no sent value found (all outputs are change, which shouldn't happen but handle it),
-            // fall back to first output
-            if (sentValue === 0 && outputs.length > 0) {
-              const firstOutput = outputs[0];
-              const value = firstOutput?.value || 0;
-              return value > 0 ? Math.floor(value * 100000000) : 0;
-            }
-
-            return Math.floor(sentValue);
-          };
-
-          const totalValue = calculateSentValue();
-
-          // Check if transaction is MWEB
-          let isMweb = false;
-          if (tx.mweb_extension !== undefined && tx.mweb_extension !== null) {
-            isMweb = true;
-          } else if (tx.vout && Array.isArray(tx.vout)) {
-            isMweb = tx.vout.some((out: ElectrumXOutput) => 
-              out.scriptPubKey?.type === 'witness_mweb_hogaddr'
-            );
-          }
-
-          return {
-            txid,
-            value: totalValue,
-            isMweb,
-          };
-        },
-        () => ({
-          txid,
-          value: 0,
-          isMweb: false,
-        })
-      )
+    const transactions: TransactionResult[] = await Promise.all(
+      validTxHashes.map(async (txid) => {
+        try {
+          const tx = await getTransaction(query.network, txid);
+          return { txid, value: calculateSentValue(tx), isMweb: isMwebTransaction(tx) };
+        } catch {
+          return { txid, value: 0, isMweb: false };
+        }
+      })
     );
-
-    const transactions: TransactionResult[] = await Promise.all(txDetailPromises);
 
     return NextResponse.json(transactions, {
       headers: {

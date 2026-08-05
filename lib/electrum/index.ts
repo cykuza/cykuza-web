@@ -19,3 +19,22 @@ export { probeTxGet, probeScripthash, probeCapability } from './probe';
 export { ElectrumSession } from './session';
 export type { ElectrumSessionOptions } from './session';
 export { callElectrumX } from './pool';
+
+export type {
+  ChainTip,
+  ElectrumXInput,
+  ElectrumXMwebExtension,
+  ElectrumXOutput,
+  ElectrumXTransaction,
+  ScripthashBalance,
+  ScripthashHistoryEntry,
+} from './protocol';
+export {
+  getBlockHeaderHex,
+  getChainTip,
+  getScripthashBalance,
+  getScripthashHistory,
+  getScripthashMempool,
+  getTransaction,
+  getTxidFromPos,
+} from './rpc';

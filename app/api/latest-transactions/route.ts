@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimit } from '../rate-limit';
-import { callElectrumX } from '@/lib/electrumServer';
+import { getBlockHeaderHex, getChainTip, getTxidFromPos } from '@/lib/electrum/rpc';
 import { parseTxCountFromBlockHex } from '@/lib/utils';
 import { z } from 'zod';
 
@@ -29,11 +29,7 @@ export async function GET(req: NextRequest) {
       limit: searchParams.get('limit'),
     });
 
-    // Get current tip - blockchain.headers.subscribe returns an object with height and hex, or just a number
-    const tip = await callElectrumX(query.network, 'blockchain.headers.subscribe', []);
-    const currentHeight = (tip && typeof tip === 'object' && 'height' in tip) 
-      ? tip.height 
-      : (typeof tip === 'number' ? tip : 0);
+    const { height: currentHeight } = await getChainTip(query.network);
 
     // Collect unique transaction hashes from recent blocks
     const txSet = new Set<string>();
@@ -47,18 +43,10 @@ export async function GET(req: NextRequest) {
         (async () => {
           try {
             // Get block header to determine transaction count
-            const blockData = await callElectrumX(
-              query.network,
-              'blockchain.block.header',
-              [height]
-            );
-            
-            // Parse block header to get tx_count
-            let txCount = 0;
-            if (typeof blockData === 'string' && blockData.length > 160) {
-              txCount = parseTxCountFromBlockHex(blockData);
-            }
-            
+            const headerHex = await getBlockHeaderHex(query.network, height);
+
+            const txCount = headerHex.length > 160 ? parseTxCountFromBlockHex(headerHex) : 0;
+
             // If we couldn't get tx_count from block data, use a reasonable limit
             const maxTxPerBlock = txCount > 0 ? Math.min(txCount, 20) : 20;
             
@@ -66,19 +54,7 @@ export async function GET(req: NextRequest) {
             const txPromises = [];
             for (let txPos = 0; txPos < maxTxPerBlock; txPos++) {
               txPromises.push(
-                callElectrumX(
-                  query.network,
-                  'blockchain.transaction.id_from_pos',
-                  [height, txPos, false]
-                ).then(
-                  (txHash) => {
-                    if (typeof txHash === 'string' && txHash.length === 64 && /^[a-fA-F0-9]{64}$/.test(txHash)) {
-                      return txHash;
-                    }
-                    return null;
-                  },
-                  () => null // Return null on error
-                )
+                getTxidFromPos(query.network, height, txPos).catch(() => null)
               );
             }
             
