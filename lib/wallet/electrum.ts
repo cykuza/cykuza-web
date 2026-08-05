@@ -22,6 +22,10 @@ export class ElectrumClient {
     return !!this.ws && this.ws.readyState === WebSocket.OPEN;
   }
 
+  get serverUrl(): string | null {
+    return this.url;
+  }
+
   async connect(url: string): Promise<void> {
     if (!url.startsWith('wss://')) {
       throw new Error('Use wss:// Electrum endpoints to avoid MITM.');

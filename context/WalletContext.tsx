@@ -10,6 +10,10 @@ import { encryptWithPassword, decryptWithPassword, hashPassword, verifyPassword 
 import * as bitcoin from 'bitcoinjs-lib';
 import ecc from '@bitcoinerlab/secp256k1';
 import { getNetwork } from '@/lib/cyberyenNetwork';
+import { CircuitBreaker } from '@/lib/electrum/circuit';
+import { connectWithCapabilities } from '@/lib/electrum/connect';
+import { isIndexingUnavailable } from '@/lib/electrum/errors';
+import { probeTxGetCapability } from '@/lib/electrum/probe';
 
 export type WalletStage = 'idle' | 'import-method' | 'password-creation' | 'mnemonic-display' | 'mnemonic-input' | 'private-key-import' | 'created' | 'ready' | 'receive' | 'send' | 'error' | 'server-config' | 'private-key-view' | 'mnemonic-view';
 
@@ -158,10 +162,13 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const electrumRef = useRef<ElectrumClient | null>(null);
   const activityTimeoutRef = useRef<NodeJS.Timeout>();
   const sessionCheckIntervalRef = useRef<NodeJS.Timeout>();
-  const connectRef = useRef<(() => Promise<void>) | null>(null);
+  const connectRef = useRef<((tryNextServer?: boolean) => Promise<void>) | null>(null);
   const justCreatedOrImportedRef = useRef(false); // Track if wallet was just created/imported
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
   const isReconnectingRef = useRef(false);
+  const circuitRef = useRef(new CircuitBreaker());
+  /** Optional: tip-derived tx_get — wallet stays ready without it */
+  const hasTxGetRef = useRef(false);
 
   const resetState = useCallback(() => {
     setStage('idle');
@@ -610,115 +617,6 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   }, [networkType, updateActivity]);
 
-  const connect = useCallback(async (tryNextServer = false) => {
-    if (isLocked) {
-      throw new Error('Wallet is locked. Please unlock first.');
-    }
-    if (!walletRef.current || !scripthashRef.current) {
-      throw new Error('Wallet not ready');
-    }
-
-    // Get list of servers to try
-    const serversToTry = servers.length > 0 ? servers : [server];
-    const startIndex = tryNextServer ? (currentServerIndex + 1) % serversToTry.length : currentServerIndex;
-    
-    setStatus('connecting');
-    setError(undefined);
-
-    // Try each server in order
-    let lastError: Error | null = null;
-    for (let i = 0; i < serversToTry.length; i++) {
-      const serverIndex = (startIndex + i) % serversToTry.length;
-      const serverToTry = serversToTry[serverIndex];
-      
-      const client = new ElectrumClient();
-      try {
-        // Set a connection timeout
-        const connectPromise = client.connect(serverToTry);
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Connection timeout')), 10000)
-        );
-        
-        await Promise.race([connectPromise, timeoutPromise]);
-        
-        const version = await client.serverVersion();
-        const protocol = parseFloat(version[1]);
-        if (Number.isNaN(protocol) || protocol < 1.4) {
-          throw new Error('Electrum server protocol too old. Require >=1.4');
-        }
-        
-        const [relay, estimate] = await Promise.all([client.relayFee(), client.estimateFee(6)]);
-        setRelayFee(relay);
-        setFeeRate(btcPerKbToSatsPerVbyte(estimate));
-        
-        // Disconnect old client if exists
-        if (electrumRef.current) {
-          electrumRef.current.disconnect();
-        }
-        
-        electrumRef.current = client;
-        setServerState(serverToTry);
-        setCurrentServerIndex(serverIndex);
-        setStatus('ready');
-        setError(undefined);
-        
-        // Only update stage if we're not already in ready state
-        if (stage !== 'ready') {
-          setStage('ready');
-        }
-        
-        await refresh(client);
-        await client.subscribeScripthash(scripthashRef.current, async () => {
-          await refresh(client);
-        });
-        
-        // Set up reconnection monitoring
-        // Check connection health periodically and reconnect if needed
-        const healthCheckInterval = setInterval(() => {
-          if (!client.connected && !isReconnectingRef.current && walletRef.current && scripthashRef.current && !isLocked) {
-            clearInterval(healthCheckInterval);
-            isReconnectingRef.current = true;
-            setStatus('connecting');
-            reconnectTimeoutRef.current = setTimeout(async () => {
-              try {
-                await connect(true); // Try next server
-              } catch (err) {
-                // If all servers fail, set error status
-                setStatus('error');
-                setError('All Electrum servers unavailable');
-              } finally {
-                isReconnectingRef.current = false;
-              }
-            }, 2000);
-          }
-        }, 5000);
-        
-        // Store interval ID for cleanup
-        (client as any).healthCheckInterval = healthCheckInterval;
-        
-        updateActivity();
-        return; // Successfully connected
-      } catch (err: any) {
-        lastError = err;
-        client.disconnect();
-        // Continue to next server
-        if (process.env.NODE_ENV === 'development') {
-          console.warn(`Failed to connect to ${serverToTry}:`, err.message);
-        }
-      }
-    }
-    
-    // All servers failed
-    setStatus('error');
-    setError(lastError?.message || 'Failed to connect to all Electrum servers');
-    throw lastError || new Error('Failed to connect to all Electrum servers');
-  }, [servers, server, currentServerIndex, isLocked, updateActivity, stage]);
-
-  // Store connect function in ref after it's defined
-  useEffect(() => {
-    connectRef.current = connect;
-  }, [connect]);
-
   const refresh = useCallback(async (client?: ElectrumClient) => {
     const active = client ?? electrumRef.current;
     if (!active || !scripthashRef.current) return;
@@ -729,10 +627,13 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       ]);
       const newBalance = { confirmed: bal.confirmed, unconfirmed: bal.unconfirmed };
       setBalance(newBalance);
-      
+
       const detailed = await Promise.all(
         hist.slice(-20).map(async (h) => {
           try {
+            if (!hasTxGetRef.current) {
+              return { txid: h.tx_hash, height: h.height, amount: 0 } as TxRecord;
+            }
             const tx = await active.getTransaction(h.tx_hash);
             return {
               txid: h.tx_hash,
@@ -740,7 +641,10 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               amount: 0,
               timestamp: (tx as any)?.blocktime,
             } as TxRecord;
-          } catch {
+          } catch (err) {
+            if (isIndexingUnavailable(err)) {
+              hasTxGetRef.current = false;
+            }
             return { txid: h.tx_hash, height: h.height, amount: 0 } as TxRecord;
           }
         })
@@ -750,6 +654,119 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setError(err.message || 'Failed to refresh');
     }
   }, []);
+
+  const connect = useCallback(async (tryNextServer = false) => {
+    if (isLocked) {
+      throw new Error('Wallet is locked. Please unlock first.');
+    }
+    if (!walletRef.current || !scripthashRef.current) {
+      throw new Error('Wallet not ready');
+    }
+
+    const serversToTry = servers.length > 0 ? servers : [server].filter(Boolean);
+    if (serversToTry.length === 0) {
+      setStatus('error');
+      setError('No Electrum servers configured');
+      throw new Error('No Electrum servers configured');
+    }
+
+    const startIndex = tryNextServer
+      ? (currentServerIndex + 1) % serversToTry.length
+      : currentServerIndex;
+
+    setStatus('connecting');
+    setError(undefined);
+
+    try {
+      // Wallet ready = transport + scripthash. tx_get is optional (history details degrade).
+      const result = await connectWithCapabilities({
+        urls: serversToTry,
+        startIndex,
+        required: ['transport', 'scripthash'],
+        scripthash: scripthashRef.current,
+        circuit: circuitRef.current,
+      });
+
+      const client = result.client;
+      hasTxGetRef.current = false;
+
+      // Soft probe: tip-derived tx_get improves history timestamps; failure does not block wallet.
+      try {
+        await probeTxGetCapability((method, params = []) => client.call(method, params));
+        hasTxGetRef.current = true;
+      } catch (probeErr) {
+        hasTxGetRef.current = false;
+        if (process.env.NODE_ENV === 'development') {
+          console.warn('Wallet connected without tx_get capability:', probeErr);
+        }
+      }
+
+      const [relay, estimate] = await Promise.all([
+        client.relayFee(),
+        client.estimateFee(6),
+      ]);
+      setRelayFee(relay);
+      setFeeRate(btcPerKbToSatsPerVbyte(estimate));
+
+      if (electrumRef.current) {
+        if ((electrumRef.current as any).healthCheckInterval) {
+          clearInterval((electrumRef.current as any).healthCheckInterval);
+        }
+        electrumRef.current.disconnect();
+      }
+
+      electrumRef.current = client;
+      setServerState(result.url);
+      setCurrentServerIndex(result.index);
+      setStatus('ready');
+      setError(undefined);
+
+      if (stage !== 'ready') {
+        setStage('ready');
+      }
+
+      await refresh(client);
+      await client.subscribeScripthash(scripthashRef.current, async () => {
+        await refresh(client);
+      });
+
+      const healthCheckInterval = setInterval(() => {
+        if (
+          !client.connected &&
+          !isReconnectingRef.current &&
+          walletRef.current &&
+          scripthashRef.current &&
+          !isLocked
+        ) {
+          clearInterval(healthCheckInterval);
+          isReconnectingRef.current = true;
+          setStatus('connecting');
+          reconnectTimeoutRef.current = setTimeout(async () => {
+            try {
+              await connect(true);
+            } catch {
+              setStatus('error');
+              setError('All Electrum servers unavailable');
+            } finally {
+              isReconnectingRef.current = false;
+            }
+          }, 2000);
+        }
+      }, 5000);
+
+      (client as any).healthCheckInterval = healthCheckInterval;
+      updateActivity();
+    } catch (err: any) {
+      setStatus('error');
+      setError(err?.message || 'Failed to connect to all Electrum servers');
+      throw err;
+    }
+  }, [servers, server, currentServerIndex, isLocked, updateActivity, stage, refresh]);
+
+  // Store connect function in ref after it's defined
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
 
   const getUtxos = useCallback(async (): Promise<Array<{ txid: string; vout: number; value: number }>> => {
     if (isLocked) {

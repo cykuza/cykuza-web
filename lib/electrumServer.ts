@@ -1,10 +1,22 @@
 /**
- * Server-side ElectrumX client for API routes
- * Uses WebSocket (WSS/WS) connections to ElectrumX servers
- * Supports both connection reuse (non-serverless) and one-time connections (serverless)
+ * Server-side ElectrumX client for API routes.
+ * Multi-URL failover with shared circuit breaker and tip-aware indexing errors.
  */
 
-type NetworkType = 'mainnet' | 'testnet';
+import { getSharedCircuitBreaker } from './electrum/circuit';
+import {
+  electrumEnvVarName,
+  getElectrumServerUrls,
+  type ElectrumNetwork,
+} from './electrum/servers';
+import {
+  indexingUnavailableMessage,
+  isIndexingUnavailable,
+  errorMessage,
+} from './electrum/errors';
+import { probeTxGetCapability } from './electrum/probe';
+
+type NetworkType = ElectrumNetwork;
 
 interface ElectrumRequest {
   id: number;
@@ -27,29 +39,22 @@ interface PendingRequest {
   timeout: NodeJS.Timeout;
 }
 
+const TX_GET_METHODS = new Set([
+  'blockchain.transaction.get',
+  'blockchain.transaction.get_merkle',
+]);
+
 class ElectrumServerClient {
   private requestId = 0;
   private wsConnections = new Map<string, WebSocket>();
   private pendingRequests = new Map<number, PendingRequest>();
   private messageHandlers = new Map<string, (event: MessageEvent) => void>();
+  private probedTxGet = new Set<string>();
 
-  private getServerUrl(network: NetworkType): string {
-    const envVar = network === 'mainnet' 
-      ? process.env.NEXT_PUBLIC_ELECTRUMX_MAINNET 
-      : process.env.NEXT_PUBLIC_ELECTRUMX_TESTNET;
-    
-    if (!envVar || envVar.trim() === '') {
-      return '';
-    }
-    
-    // Handle comma-separated URLs (take the first one)
-    const urls = envVar.split(',').map(s => s.trim()).filter(Boolean);
-    return urls[0] || '';
+  private getServerUrls(network: NetworkType): string[] {
+    return getElectrumServerUrls(network);
   }
 
-  /**
-   * Check if we're in a serverless environment (Vercel, etc.)
-   */
   private isServerless(): boolean {
     return !!(
       process.env.VERCEL ||
@@ -59,60 +64,101 @@ class ElectrumServerClient {
   }
 
   /**
-   * Call ElectrumX method via WebSocket (WSS/WS)
-   * ElectrumX only supports WSS (WebSocket Secure) or SSL/TCP connections
+   * Call ElectrumX with failover across configured URLs.
+   * Indexing failures open the circuit and advance to the next backend.
    */
   async call(network: NetworkType, method: string, params: any[] = []): Promise<any> {
-    const url = this.getServerUrl(network);
-    
-    // Validate URL is not empty
-    if (!url || url.trim() === '') {
-      const envVarName = network === 'mainnet' 
-        ? 'NEXT_PUBLIC_ELECTRUMX_MAINNET' 
-        : 'NEXT_PUBLIC_ELECTRUMX_TESTNET';
+    const urls = this.getServerUrls(network);
+
+    if (urls.length === 0) {
+      const envVarName = electrumEnvVarName(network);
       throw new Error(
         `ElectrumX server URL is not configured. Please set ${envVarName} environment variable. ` +
-        `Example: wss://your-server:50004`
+          `Example: wss://your-server:50004`
       );
     }
-    
-    const id = ++this.requestId;
 
-    const request: ElectrumRequest = {
-      id,
-      method,
-      params,
-    };
+    const circuit = getSharedCircuitBreaker();
+    let lastError: Error | null = null;
+    let attempted = 0;
+    const needsTxGet = TX_GET_METHODS.has(method);
 
-    // For WebSocket URLs - create connection for each request
-    // In serverless, we create a new connection per request (no reuse)
-    if (url.startsWith('wss://') || url.startsWith('ws://')) {
-      if (this.isServerless()) {
-        // In serverless, create a new connection for each request (no connection reuse)
-        return this.callWebSocketOneTime(url, request);
+    for (let i = 0; i < urls.length; i++) {
+      const url = urls[i];
+      if (!circuit.allow(url)) {
+        continue;
+      }
+      attempted++;
+
+      if (!(url.startsWith('wss://') || url.startsWith('ws://'))) {
+        lastError = new Error(`Unsupported URL scheme: ${url}`);
+        circuit.recordFailure(url);
+        continue;
       }
 
-      // Use WebSocket with connection reuse for non-serverless
-      return this.callWebSocket(url, request);
+      try {
+        if (needsTxGet && !this.probedTxGet.has(url)) {
+          await this.ensureTxGetCapability(url);
+          this.probedTxGet.add(url);
+        }
+
+        const id = ++this.requestId;
+        const request: ElectrumRequest = { id, method, params };
+        const result = this.isServerless()
+          ? await this.callWebSocketOneTime(url, request)
+          : await this.callWebSocket(url, request);
+
+        circuit.recordSuccess(url);
+        return result;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(errorMessage(err));
+        this.probedTxGet.delete(url);
+
+        if (isIndexingUnavailable(err)) {
+          circuit.open(url);
+          continue;
+        }
+
+        circuit.recordFailure(url);
+      }
     }
 
-    throw new Error(`Unsupported URL scheme: ${url}`);
+    if (attempted === 0) {
+      throw new Error(
+        'All Electrum backends temporarily unavailable (circuit open). Retry shortly.'
+      );
+    }
+
+    if (lastError && isIndexingUnavailable(lastError)) {
+      throw new Error(indexingUnavailableMessage());
+    }
+
+    throw lastError || new Error('Failed to call ElectrumX on all configured servers');
   }
 
-  /**
-   * Setup a single message handler for a WebSocket connection
-   * This prevents listener leaks by using one handler per connection
-   */
+  private async ensureTxGetCapability(url: string): Promise<void> {
+    const call = async (method: string, params: unknown[] = []) => {
+      const id = ++this.requestId;
+      const request: ElectrumRequest = {
+        id,
+        method,
+        params: params as any[],
+      };
+      return this.isServerless()
+        ? this.callWebSocketOneTime(url, request)
+        : this.callWebSocket(url, request);
+    };
+
+    await probeTxGetCapability(call);
+  }
+
   private setupMessageHandler(url: string, ws: WebSocket): void {
-    // Always verify the handler is attached to the current WebSocket instance
-    // The connection might have been recreated, so we need to reattach
     const existingHandler = this.messageHandlers.get(url);
     if (existingHandler) {
-      // Remove old handler if it exists (in case connection was recreated)
       try {
         ws.removeEventListener('message', existingHandler);
-      } catch (e) {
-        // Ignore errors - handler might not be attached
+      } catch {
+        // ignore
       }
     }
 
@@ -121,11 +167,7 @@ class ElectrumServerClient {
         const data = typeof event.data === 'string' ? event.data : event.data.toString();
         const parsed = JSON.parse(data);
 
-        // ElectrumX can send notifications (no id) or responses (with id)
-        // Only process responses that have an id field
         if (parsed.id === undefined || parsed.id === null) {
-          // This is likely a notification (like blockchain.headers.subscribe updates)
-          // Ignore it - it's not a response to our request
           return;
         }
 
@@ -141,9 +183,13 @@ class ElectrumServerClient {
           }
         }
       } catch (error) {
-        // Log parse errors but don't reject all requests - might be a malformed message
         if (process.env.NODE_ENV === 'development') {
-          console.error('Failed to parse WebSocket response:', error, 'Data:', typeof event.data === 'string' ? event.data.substring(0, 200) : 'non-string');
+          console.error(
+            'Failed to parse WebSocket response:',
+            error,
+            'Data:',
+            typeof event.data === 'string' ? event.data.substring(0, 200) : 'non-string'
+          );
         }
       }
     };
@@ -151,29 +197,19 @@ class ElectrumServerClient {
     this.messageHandlers.set(url, messageHandler);
     ws.addEventListener('message', messageHandler);
 
-    // Increase max listeners to prevent warnings (we manage listeners properly)
-    // Type guard for Node.js EventEmitter methods
     if (ws && typeof (ws as any).setMaxListeners === 'function') {
       (ws as any).setMaxListeners(20);
     }
   }
 
-  /**
-   * Call ElectrumX via WebSocket with connection reuse (for non-serverless environments)
-   * Uses native WebSocket API (Node.js 18+) similar to browser WebSocket
-   * Uses a single message handler per connection to prevent listener leaks
-   */
   private async callWebSocket(url: string, request: ElectrumRequest): Promise<any> {
     return new Promise((resolve, reject) => {
-      // Create timeout for this request
       const timeout = setTimeout(() => {
         const pending = this.pendingRequests.get(request.id);
         if (pending) {
           this.pendingRequests.delete(request.id);
-          // Check if connection is still alive
           const ws = this.wsConnections.get(url);
           if (ws && ws.readyState !== WebSocket.OPEN) {
-            // Connection is dead, clean it up
             this.wsConnections.delete(url);
             const handler = this.messageHandlers.get(url);
             if (handler && ws) {
@@ -183,9 +219,8 @@ class ElectrumServerClient {
           }
           pending.reject(new Error('Request timeout: No response received'));
         }
-      }, 15000); // 15 second timeout
+      }, 15000);
 
-      // Store the promise handlers
       this.pendingRequests.set(request.id, {
         resolve: (value: any) => {
           clearTimeout(timeout);
@@ -198,12 +233,10 @@ class ElectrumServerClient {
         timeout,
       });
 
-      // Reuse existing connection if available
       let ws = this.wsConnections.get(url);
 
       const connect = () => {
         try {
-          // Validate URL before creating WebSocket
           if (!url || url.trim() === '') {
             const pending = this.pendingRequests.get(request.id);
             if (pending) {
@@ -212,25 +245,31 @@ class ElectrumServerClient {
             }
             return;
           }
-          
-          // Validate URL format
+
           try {
             new URL(url);
           } catch (urlError) {
             const pending = this.pendingRequests.get(request.id);
             if (pending) {
               this.pendingRequests.delete(request.id);
-              pending.reject(new Error(`Invalid WebSocket URL format: ${url}. Error: ${urlError instanceof Error ? urlError.message : 'Unknown error'}`));
+              pending.reject(
+                new Error(
+                  `Invalid WebSocket URL format: ${url}. Error: ${urlError instanceof Error ? urlError.message : 'Unknown error'}`
+                )
+              );
             }
             return;
           }
-          
-          // Use native WebSocket (Node.js 18+ has it globally)
+
           if (typeof WebSocket === 'undefined') {
             const pending = this.pendingRequests.get(request.id);
             if (pending) {
               this.pendingRequests.delete(request.id);
-              pending.reject(new Error('WebSocket is not available. Node.js 18+ is required for WebSocket support.'));
+              pending.reject(
+                new Error(
+                  'WebSocket is not available. Node.js 18+ is required for WebSocket support.'
+                )
+              );
             }
             return;
           }
@@ -249,69 +288,84 @@ class ElectrumServerClient {
             }
           }, 10000);
 
-          ws.addEventListener('open', () => {
-            clearTimeout(connectionTimeout);
-            this.wsConnections.set(url, ws!);
-            this.setupMessageHandler(url, ws!);
-            try {
-              ws!.send(JSON.stringify(request));
-            } catch (error) {
+          ws.addEventListener(
+            'open',
+            () => {
+              clearTimeout(connectionTimeout);
+              this.wsConnections.set(url, ws!);
+              this.setupMessageHandler(url, ws!);
+              try {
+                ws!.send(JSON.stringify(request));
+              } catch (error) {
+                const pending = this.pendingRequests.get(request.id);
+                if (pending) {
+                  this.pendingRequests.delete(request.id);
+                  pending.reject(
+                    new Error(
+                      `Failed to send request: ${error instanceof Error ? error.message : 'Unknown error'}`
+                    )
+                  );
+                }
+              }
+            },
+            { once: true }
+          );
+
+          ws.addEventListener(
+            'error',
+            (error: Event) => {
+              clearTimeout(connectionTimeout);
+              this.wsConnections.delete(url);
+              const handler = this.messageHandlers.get(url);
+              if (handler && ws) {
+                ws.removeEventListener('message', handler);
+              }
+              this.messageHandlers.delete(url);
               const pending = this.pendingRequests.get(request.id);
               if (pending) {
                 this.pendingRequests.delete(request.id);
-                pending.reject(new Error(`Failed to send request: ${error instanceof Error ? error.message : 'Unknown error'}`));
+                pending.reject(new Error(`WebSocket error: ${error.type}`));
               }
-            }
-          }, { once: true });
+            },
+            { once: true }
+          );
 
-          ws.addEventListener('error', (error: Event) => {
-            clearTimeout(connectionTimeout);
-            this.wsConnections.delete(url);
-            const handler = this.messageHandlers.get(url);
-            if (handler && ws) {
-              ws.removeEventListener('message', handler);
-            }
-            this.messageHandlers.delete(url);
-            const pending = this.pendingRequests.get(request.id);
-            if (pending) {
-              this.pendingRequests.delete(request.id);
-              pending.reject(new Error(`WebSocket error: ${error.type}`));
-            }
-          }, { once: true });
-
-          ws.addEventListener('close', () => {
-            this.wsConnections.delete(url);
-            const handler = this.messageHandlers.get(url);
-            if (handler && ws) {
-              ws.removeEventListener('message', handler);
-            }
-            this.messageHandlers.delete(url);
-            // Reject all pending requests for this connection
-            const pending = Array.from(this.pendingRequests.entries());
-            pending.forEach(([id, handlers]) => {
-              this.pendingRequests.delete(id);
-              handlers.reject(new Error('WebSocket connection closed'));
-            });
-          }, { once: true });
+          ws.addEventListener(
+            'close',
+            () => {
+              this.wsConnections.delete(url);
+              const handler = this.messageHandlers.get(url);
+              if (handler && ws) {
+                ws.removeEventListener('message', handler);
+              }
+              this.messageHandlers.delete(url);
+              const pending = Array.from(this.pendingRequests.entries());
+              pending.forEach(([id, handlers]) => {
+                this.pendingRequests.delete(id);
+                handlers.reject(new Error('WebSocket connection closed'));
+              });
+            },
+            { once: true }
+          );
         } catch (error) {
           const pending = this.pendingRequests.get(request.id);
           if (pending) {
             this.pendingRequests.delete(request.id);
-            pending.reject(new Error(`Failed to create WebSocket connection: ${error instanceof Error ? error.message : 'Unknown error'}`));
+            pending.reject(
+              new Error(
+                `Failed to create WebSocket connection: ${error instanceof Error ? error.message : 'Unknown error'}`
+              )
+            );
           }
         }
       };
 
       if (ws && ws.readyState === WebSocket.OPEN) {
-        // Reuse existing connection - always ensure message handler is set up
-        // (handler might not be attached if connection was recreated)
         this.setupMessageHandler(url, ws);
-        // Verify connection is still valid before sending
         if (ws.readyState === WebSocket.OPEN) {
           try {
             ws.send(JSON.stringify(request));
-          } catch (error) {
-            // Send failed, connection might be dead
+          } catch {
             this.wsConnections.delete(url);
             const handler = this.messageHandlers.get(url);
             if (handler) {
@@ -321,26 +375,31 @@ class ElectrumServerClient {
             connect();
           }
         } else {
-          // Connection closed, create new one
           this.wsConnections.delete(url);
           connect();
         }
       } else if (ws && ws.readyState === WebSocket.CONNECTING) {
-        // Connection is still opening, wait for it
-        ws.addEventListener('open', () => {
-          this.setupMessageHandler(url, ws!);
-          try {
-            ws!.send(JSON.stringify(request));
-          } catch (error) {
-            const pending = this.pendingRequests.get(request.id);
-            if (pending) {
-              this.pendingRequests.delete(request.id);
-              pending.reject(new Error(`Failed to send request: ${error instanceof Error ? error.message : 'Unknown error'}`));
+        ws.addEventListener(
+          'open',
+          () => {
+            this.setupMessageHandler(url, ws!);
+            try {
+              ws!.send(JSON.stringify(request));
+            } catch (error) {
+              const pending = this.pendingRequests.get(request.id);
+              if (pending) {
+                this.pendingRequests.delete(request.id);
+                pending.reject(
+                  new Error(
+                    `Failed to send request: ${error instanceof Error ? error.message : 'Unknown error'}`
+                  )
+                );
+              }
             }
-          }
-        }, { once: true });
+          },
+          { once: true }
+        );
       } else {
-        // No connection or connection closed, create new one
         if (ws) {
           this.wsConnections.delete(url);
         }
@@ -349,15 +408,11 @@ class ElectrumServerClient {
     });
   }
 
-  /**
-   * Call ElectrumX via WebSocket with one-time connection (for serverless)
-   * Creates a new connection for each request and closes it after response
-   */
   private async callWebSocketOneTime(url: string, request: ElectrumRequest): Promise<any> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error('Request timeout: No response received'));
-      }, 10000); // 10 second timeout for serverless
+      }, 10000);
 
       let ws: WebSocket | null = null;
       let messageHandler: ((event: MessageEvent) => void) | null = null;
@@ -370,8 +425,8 @@ class ElectrumServerClient {
         if (ws) {
           try {
             ws.close();
-          } catch (e) {
-            // Ignore close errors
+          } catch {
+            // ignore
           }
         }
       };
@@ -380,7 +435,11 @@ class ElectrumServerClient {
         ws = new WebSocket(url);
       } catch (error) {
         cleanup();
-        reject(new Error(`Failed to create WebSocket: ${error instanceof Error ? error.message : 'Unknown error'}`));
+        reject(
+          new Error(
+            `Failed to create WebSocket: ${error instanceof Error ? error.message : 'Unknown error'}`
+          )
+        );
         return;
       }
 
@@ -389,7 +448,6 @@ class ElectrumServerClient {
           const data = typeof event.data === 'string' ? event.data : event.data.toString();
           const parsed = JSON.parse(data);
 
-          // Only process responses that match our request ID
           if (parsed.id === request.id) {
             cleanup();
             if (parsed.error) {
@@ -398,33 +456,44 @@ class ElectrumServerClient {
               resolve(parsed.result);
             }
           }
-        } catch (error) {
-          // Ignore parse errors for non-matching messages
+        } catch {
+          // ignore parse errors for non-matching messages
         }
       };
 
       ws.addEventListener('message', messageHandler);
       ws.addEventListener('error', (err) => {
         cleanup();
-        reject(new Error(`WebSocket error: ${err instanceof Error ? err.message : 'Unknown error'}`));
+        reject(
+          new Error(
+            `WebSocket error: ${err instanceof Error ? err.message : 'Unknown error'}`
+          )
+        );
       });
       ws.addEventListener('close', () => {
         cleanup();
       });
 
-      ws.addEventListener('open', () => {
-        try {
-          ws!.send(JSON.stringify(request));
-        } catch (error) {
-          cleanup();
-          reject(new Error(`Failed to send request: ${error instanceof Error ? error.message : 'Unknown error'}`));
-        }
-      }, { once: true });
+      ws.addEventListener(
+        'open',
+        () => {
+          try {
+            ws!.send(JSON.stringify(request));
+          } catch (error) {
+            cleanup();
+            reject(
+              new Error(
+                `Failed to send request: ${error instanceof Error ? error.message : 'Unknown error'}`
+              )
+            );
+          }
+        },
+        { once: true }
+      );
     });
   }
 }
 
-// Singleton instance
 let serverClientInstance: ElectrumServerClient | null = null;
 
 export function getElectrumServerClient(): ElectrumServerClient {
@@ -434,9 +503,6 @@ export function getElectrumServerClient(): ElectrumServerClient {
   return serverClientInstance;
 }
 
-/**
- * Helper function for API routes
- */
 export async function callElectrumX(
   network: NetworkType,
   method: string,

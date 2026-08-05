@@ -2,8 +2,18 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { ElectrumClient } from '@/lib/wallet/electrum';
+import { CircuitBreaker } from '@/lib/electrum/circuit';
+import {
+  callWithIndexingFailover,
+  connectWithCapabilities,
+} from '@/lib/electrum/connect';
+import {
+  indexingUnavailableMessage,
+  isIndexingUnavailable,
+} from '@/lib/electrum/errors';
+import { getElectrumServerUrls, ElectrumNetwork } from '@/lib/electrum/servers';
 
-type NetworkType = 'mainnet' | 'testnet';
+type NetworkType = ElectrumNetwork;
 
 interface UseElectrumExplorerOptions {
   network: NetworkType;
@@ -16,11 +26,15 @@ interface UseElectrumExplorerReturn {
   error: string | null;
   call: (method: string, params?: any[]) => Promise<any>;
   reconnect: () => Promise<void>;
+  /** True when tip-derived transaction.get probe succeeded */
+  hasTxGet: boolean;
 }
 
+const EXPLORER_REQUIRED = ['transport', 'headers', 'tx_get'] as const;
+
 /**
- * Client-side hook for connecting to ElectrumX servers for explorer data
- * Uses WebSocket (WSS) connections that work perfectly on Vercel
+ * Client-side hook for explorer data.
+ * Ready only when transport + tip-derived tx_get capability are confirmed.
  */
 export function useElectrumExplorer({
   network,
@@ -29,99 +43,85 @@ export function useElectrumExplorer({
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hasTxGet, setHasTxGet] = useState(false);
+
   const clientRef = useRef<ElectrumClient | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const urlRef = useRef<string | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isReconnectingRef = useRef(false);
   const currentServerIndexRef = useRef(0);
+  const circuitRef = useRef(new CircuitBreaker());
+  const connectRef = useRef<(tryNext?: boolean) => Promise<void>>(async () => {});
 
-  // Get server list from environment variables
-  const getServers = useCallback((): string[] => {
-    const envVar = network === 'mainnet'
-      ? process.env.NEXT_PUBLIC_ELECTRUMX_MAINNET
-      : process.env.NEXT_PUBLIC_ELECTRUMX_TESTNET;
-
-    if (!envVar || envVar.trim() === '') {
-      return [];
-    }
-
-    // Support comma-separated list or single server
-    return envVar.split(',').map(s => s.trim()).filter(Boolean);
-  }, [network]);
-
-  // Connect to ElectrumX server
-  const connect = useCallback(async (tryNextServer = false): Promise<void> => {
-    if (isReconnectingRef.current) {
-      return; // Already reconnecting
-    }
-
-    const servers = getServers();
-    if (servers.length === 0) {
-      setError('No ElectrumX servers configured. Please set NEXT_PUBLIC_ELECTRUMX_MAINNET or NEXT_PUBLIC_ELECTRUMX_TESTNET environment variable.');
-      setConnected(false);
-      setConnecting(false);
-      return;
-    }
-
-    setConnecting(true);
-    setError(null);
-
-    const startIndex = tryNextServer
-      ? (currentServerIndexRef.current + 1) % servers.length
-      : currentServerIndexRef.current;
-
-    // Try each server in order
-    let lastError: Error | null = null;
-    for (let i = 0; i < servers.length; i++) {
-      const serverIndex = (startIndex + i) % servers.length;
-      const serverUrl = servers[serverIndex];
-
-      // Disconnect previous client if exists
-      if (clientRef.current) {
-        try {
-          clientRef.current.disconnect();
-        } catch (e) {
-          // Ignore disconnect errors
-        }
-        clientRef.current = null;
+  const connect = useCallback(
+    async (tryNextServer = false): Promise<void> => {
+      if (isReconnectingRef.current && tryNextServer === false) {
+        return;
       }
 
-      const client = new ElectrumClient();
-      try {
-        // Set a connection timeout
-        const connectPromise = client.connect(serverUrl);
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Connection timeout')), 10000)
+      const servers = getElectrumServerUrls(network);
+      if (servers.length === 0) {
+        setError(
+          'No ElectrumX servers configured. Please set NEXT_PUBLIC_ELECTRUMX_MAINNET or NEXT_PUBLIC_ELECTRUMX_TESTNET environment variable.'
         );
+        setConnected(false);
+        setHasTxGet(false);
+        setConnecting(false);
+        return;
+      }
 
-        await Promise.race([connectPromise, timeoutPromise]);
+      setConnecting(true);
+      setError(null);
 
-        // Verify server version
-        const version = await client.serverVersion();
-        const protocol = parseFloat(version[1]);
-        if (Number.isNaN(protocol) || protocol < 1.4) {
-          throw new Error('Electrum server protocol too old. Require >=1.4');
+      if (clientRef.current) {
+        try {
+          const prev = clientRef.current;
+          if ((prev as any).healthCheckInterval) {
+            clearInterval((prev as any).healthCheckInterval);
+          }
+          prev.disconnect();
+        } catch {
+          // ignore
         }
+        clientRef.current = null;
+        urlRef.current = null;
+      }
 
-        // Successfully connected
-        clientRef.current = client;
-        currentServerIndexRef.current = serverIndex;
+      const startIndex = tryNextServer
+        ? (currentServerIndexRef.current + 1) % servers.length
+        : currentServerIndexRef.current;
+
+      try {
+        const result = await connectWithCapabilities({
+          urls: servers,
+          startIndex,
+          required: EXPLORER_REQUIRED,
+          circuit: circuitRef.current,
+        });
+
+        clientRef.current = result.client;
+        urlRef.current = result.url;
+        currentServerIndexRef.current = result.index;
+        setHasTxGet(result.capabilities.has('tx_get'));
         setConnected(true);
         setConnecting(false);
         setError(null);
 
-        // Set up reconnection monitoring
+        const client = result.client;
         const healthCheckInterval = setInterval(() => {
           if (!client.connected && !isReconnectingRef.current) {
             clearInterval(healthCheckInterval);
             isReconnectingRef.current = true;
             setConnected(false);
+            setHasTxGet(false);
             setConnecting(true);
             reconnectTimeoutRef.current = setTimeout(async () => {
               try {
-                await connect(true); // Try next server
-              } catch (err) {
+                await connectRef.current(true);
+              } catch {
                 setError('All Electrum servers unavailable');
                 setConnected(false);
+                setHasTxGet(false);
                 setConnecting(false);
               } finally {
                 isReconnectingRef.current = false;
@@ -130,68 +130,80 @@ export function useElectrumExplorer({
           }
         }, 5000);
 
-        // Store interval ID for cleanup
         (client as any).healthCheckInterval = healthCheckInterval;
-
-        return; // Successfully connected
       } catch (err: any) {
-        lastError = err;
-        try {
-          client.disconnect();
-        } catch (e) {
-          // Ignore disconnect errors
-        }
-        // Continue to next server
-        if (process.env.NODE_ENV === 'development') {
-          console.warn(`Failed to connect to ${serverUrl}:`, err.message);
-        }
+        const message = err?.message || 'Failed to connect to any Electrum server';
+        setError(
+          isIndexingUnavailable(err) ? indexingUnavailableMessage() : message
+        );
+        setConnected(false);
+        setHasTxGet(false);
+        setConnecting(false);
+        throw err;
       }
-    }
+    },
+    [network]
+  );
 
-    // All servers failed
-    setError(lastError?.message || 'Failed to connect to any Electrum server');
-    setConnected(false);
-    setConnecting(false);
-  }, [getServers]);
+  connectRef.current = connect;
 
-  // Reconnect function
   const reconnect = useCallback(async () => {
     if (clientRef.current) {
       try {
-        clientRef.current.disconnect();
-      } catch (e) {
-        // Ignore disconnect errors
+        const client = clientRef.current;
+        if ((client as any).healthCheckInterval) {
+          clearInterval((client as any).healthCheckInterval);
+        }
+        client.disconnect();
+      } catch {
+        // ignore
       }
       clientRef.current = null;
+      urlRef.current = null;
     }
     setConnected(false);
+    setHasTxGet(false);
     setError(null);
     await connect(false);
   }, [connect]);
 
-  // Call ElectrumX method
-  const call = useCallback(async (method: string, params: any[] = []): Promise<any> => {
-    if (!clientRef.current || !clientRef.current.connected) {
-      // Try to reconnect if not connected
-      if (!isReconnectingRef.current) {
-        await connect(false);
-      }
+  const call = useCallback(
+    async (method: string, params: any[] = []): Promise<any> => {
       if (!clientRef.current || !clientRef.current.connected) {
-        throw new Error('Not connected to Electrum server');
+        if (!isReconnectingRef.current) {
+          await connect(false);
+        }
+        if (!clientRef.current || !clientRef.current.connected) {
+          throw new Error('Not connected to Electrum server');
+        }
       }
-    }
 
-    // Use the public call method
-    return clientRef.current.call(method, params);
-  }, [connect]);
+      const client = clientRef.current;
+      const url = urlRef.current || client.serverUrl || '';
 
-  // Auto-connect on mount if enabled
+      return callWithIndexingFailover({
+        url,
+        circuit: circuitRef.current,
+        call: () => client.call(method, params),
+        onIndexingFailover: async () => {
+          await connect(true);
+          if (!clientRef.current?.connected) {
+            throw new Error(indexingUnavailableMessage());
+          }
+          return clientRef.current.call(method, params);
+        },
+      });
+    },
+    [connect]
+  );
+
   useEffect(() => {
     if (autoConnect) {
-      connect(false);
+      connect(false).catch(() => {
+        // error state already set
+      });
     }
 
-    // Cleanup on unmount
     return () => {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -203,18 +215,20 @@ export function useElectrumExplorer({
             clearInterval((client as any).healthCheckInterval);
           }
           client.disconnect();
-        } catch (e) {
-          // Ignore disconnect errors
+        } catch {
+          // ignore
         }
         clientRef.current = null;
+        urlRef.current = null;
       }
     };
   }, [autoConnect, connect]);
 
-  // Reconnect when network changes
   useEffect(() => {
     if (autoConnect && clientRef.current) {
-      connect(false);
+      connect(false).catch(() => {
+        // error state already set
+      });
     }
   }, [network, autoConnect, connect]);
 
@@ -224,6 +238,6 @@ export function useElectrumExplorer({
     error,
     call,
     reconnect,
+    hasTxGet,
   };
 }
-

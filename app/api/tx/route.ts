@@ -33,7 +33,7 @@ export async function GET(req: NextRequest) {
     const query = querySchema.parse({
       hash: hashParam,
       network: searchParams.get('network') || 'mainnet',
-      verbose: searchParams.get('verbose'),
+      verbose: searchParams.get('verbose') ?? undefined,
     });
 
     // Validate hash format
