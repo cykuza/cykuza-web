@@ -1,10 +1,21 @@
-export type { Capability } from './probe';
+export type {
+  Capability,
+  CapabilityProfile,
+  ElectrumCall,
+  ElectrumNetwork,
+} from './types';
+export { EXPLORER_PROFILE, WALLET_PROFILE } from './types';
+
+export { ElectrumError, toElectrumError, methodRequiresTxGet } from './errors';
+export type { ElectrumFailureKind } from './errors';
+
 export { CircuitBreaker, getSharedCircuitBreaker } from './circuit';
 export {
-  classifyElectrumFailure,
-  isIndexingUnavailable,
-  indexingUnavailableMessage,
-} from './errors';
-export { getElectrumServerUrls, electrumEnvVarName } from './servers';
-export { probeTxGetCapability, probeScripthashCapability } from './probe';
-export { connectWithCapabilities, callWithIndexingFailover } from './connect';
+  getElectrumServerUrls,
+  electrumEnvVarName,
+  requireElectrumServerUrls,
+} from './servers';
+export { probeTxGet, probeScripthash, probeCapability } from './probe';
+export { ElectrumSession } from './session';
+export type { ElectrumSessionOptions } from './session';
+export { callElectrumX } from './pool';

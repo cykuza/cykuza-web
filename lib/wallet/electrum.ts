@@ -38,7 +38,7 @@ export class ElectrumClient {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(url);
       const handleOpen = () => resolve();
-      const handleError = (err: Event) => reject(err);
+      const handleError = () => reject(new Error('WebSocket connection error'));
       this.ws?.addEventListener('open', handleOpen, { once: true });
       this.ws?.addEventListener('error', handleError, { once: true });
       this.ws?.addEventListener('message', this.onMessage);

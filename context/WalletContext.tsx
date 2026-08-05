@@ -10,10 +10,9 @@ import { encryptWithPassword, decryptWithPassword, hashPassword, verifyPassword 
 import * as bitcoin from 'bitcoinjs-lib';
 import ecc from '@bitcoinerlab/secp256k1';
 import { getNetwork } from '@/lib/cyberyenNetwork';
-import { CircuitBreaker } from '@/lib/electrum/circuit';
-import { connectWithCapabilities } from '@/lib/electrum/connect';
-import { isIndexingUnavailable } from '@/lib/electrum/errors';
-import { probeTxGetCapability } from '@/lib/electrum/probe';
+import { ElectrumSession } from '@/lib/electrum/session';
+import { toElectrumError } from '@/lib/electrum/errors';
+import { WALLET_PROFILE } from '@/lib/electrum/types';
 
 export type WalletStage = 'idle' | 'import-method' | 'password-creation' | 'mnemonic-display' | 'mnemonic-input' | 'private-key-import' | 'created' | 'ready' | 'receive' | 'send' | 'error' | 'server-config' | 'private-key-view' | 'mnemonic-view';
 
@@ -160,15 +159,18 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const scripthashRef = useRef<string>();
   const mnemonicRef = useRef<string>(); // Store mnemonic/private key in ref, not state
   const electrumRef = useRef<ElectrumClient | null>(null);
+  const sessionRef = useRef<ElectrumSession | null>(null);
   const activityTimeoutRef = useRef<NodeJS.Timeout>();
   const sessionCheckIntervalRef = useRef<NodeJS.Timeout>();
   const connectRef = useRef<((tryNextServer?: boolean) => Promise<void>) | null>(null);
   const justCreatedOrImportedRef = useRef(false); // Track if wallet was just created/imported
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
   const isReconnectingRef = useRef(false);
-  const circuitRef = useRef(new CircuitBreaker());
-  /** Optional: tip-derived tx_get — wallet stays ready without it */
-  const hasTxGetRef = useRef(false);
+
+  const disposeElectrum = useCallback(() => {
+    sessionRef.current?.dispose();
+    sessionRef.current = null;
+    electrumRef.current = null;
+  }, []);
 
   const resetState = useCallback(() => {
     setStage('idle');
@@ -189,21 +191,9 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     scripthashRef.current = undefined;
     // SECURITY: Clear sensitive data from refs
     mnemonicRef.current = undefined;
-    
-    // Clear reconnection timeout
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = undefined;
-    }
+
     isReconnectingRef.current = false;
-    
-    // Clear health check interval if exists
-    if (electrumRef.current && (electrumRef.current as any).healthCheckInterval) {
-      clearInterval((electrumRef.current as any).healthCheckInterval);
-    }
-    
-    electrumRef.current?.disconnect();
-    electrumRef.current = null;
+    disposeElectrum();
     
     // Clear encrypted data from sessionStorage
     if (typeof window !== 'undefined') {
@@ -220,7 +210,7 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       clearTimeout(activityTimeoutRef.current);
       activityTimeoutRef.current = undefined;
     }
-  }, []);
+  }, [disposeElectrum]);
 
   // Check if wallet is locked (has encrypted data) and restore state
   // Only run this on initial mount, not after wallet creation/import or stage changes
@@ -389,22 +379,13 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     sessionStorage.setItem('cyberyen-network', network);
     
     // Disconnect and reset if connected
-    if (electrumRef.current) {
-      electrumRef.current.disconnect();
-      electrumRef.current = null;
-      setStatus('disconnected');
-    }
-    
-    // Clear any pending reconnection
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = undefined;
-    }
+    disposeElectrum();
+    setStatus('disconnected');
     isReconnectingRef.current = false;
     
     // Reset wallet state when network changes
     resetState();
-  }, [resetState]);
+  }, [resetState, disposeElectrum]);
 
   const setServer = useCallback((url: string) => {
     setServerState(url);
@@ -625,15 +606,16 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         active.getBalance(scripthashRef.current),
         active.getHistory(scripthashRef.current)
       ]);
-      const newBalance = { confirmed: bal.confirmed, unconfirmed: bal.unconfirmed };
-      setBalance(newBalance);
+      setBalance({ confirmed: bal.confirmed, unconfirmed: bal.unconfirmed });
+
+      const canEnrich = sessionRef.current?.has('tx_get') ?? false;
 
       const detailed = await Promise.all(
         hist.slice(-20).map(async (h) => {
+          if (!canEnrich) {
+            return { txid: h.tx_hash, height: h.height, amount: 0 } as TxRecord;
+          }
           try {
-            if (!hasTxGetRef.current) {
-              return { txid: h.tx_hash, height: h.height, amount: 0 } as TxRecord;
-            }
             const tx = await active.getTransaction(h.tx_hash);
             return {
               txid: h.tx_hash,
@@ -641,10 +623,7 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               amount: 0,
               timestamp: (tx as any)?.blocktime,
             } as TxRecord;
-          } catch (err) {
-            if (isIndexingUnavailable(err)) {
-              hasTxGetRef.current = false;
-            }
+          } catch {
             return { txid: h.tx_hash, height: h.height, amount: 0 } as TxRecord;
           }
         })
@@ -670,35 +649,50 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       throw new Error('No Electrum servers configured');
     }
 
-    const startIndex = tryNextServer
-      ? (currentServerIndex + 1) % serversToTry.length
-      : currentServerIndex;
-
     setStatus('connecting');
     setError(undefined);
 
     try {
-      // Wallet ready = transport + scripthash. tx_get is optional (history details degrade).
-      const result = await connectWithCapabilities({
-        urls: serversToTry,
-        startIndex,
-        required: ['transport', 'scripthash'],
-        scripthash: scripthashRef.current,
-        circuit: circuitRef.current,
-      });
+      let session = sessionRef.current;
+      const urlsKey = serversToTry.join(',');
+      const sessionUrlsKey = session?.serverUrls.join(',') ?? null;
 
-      const client = result.client;
-      hasTxGetRef.current = false;
+      // Recreate only when absent or server list changed; rotate on the same session.
+      if (!session || sessionUrlsKey !== urlsKey) {
+        disposeElectrum();
+        session = new ElectrumSession({
+          urls: serversToTry,
+          profile: WALLET_PROFILE,
+          scripthash: scripthashRef.current,
+          onConnectionLost: () => {
+            if (
+              isReconnectingRef.current ||
+              isLocked ||
+              !walletRef.current ||
+              !scripthashRef.current
+            ) {
+              return;
+            }
+            isReconnectingRef.current = true;
+            setStatus('connecting');
+            connectRef.current?.(true)
+              .catch(() => {
+                setStatus('error');
+                setError('All Electrum servers unavailable');
+              })
+              .finally(() => {
+                isReconnectingRef.current = false;
+              });
+          },
+        });
+        sessionRef.current = session;
+      }
 
-      // Soft probe: tip-derived tx_get improves history timestamps; failure does not block wallet.
-      try {
-        await probeTxGetCapability((method, params = []) => client.call(method, params));
-        hasTxGetRef.current = true;
-      } catch (probeErr) {
-        hasTxGetRef.current = false;
-        if (process.env.NODE_ENV === 'development') {
-          console.warn('Wallet connected without tx_get capability:', probeErr);
-        }
+      await session.connect(tryNextServer);
+
+      const client = session.electrum;
+      if (!client) {
+        throw new Error('Electrum session connected without client');
       }
 
       const [relay, estimate] = await Promise.all([
@@ -708,16 +702,9 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setRelayFee(relay);
       setFeeRate(btcPerKbToSatsPerVbyte(estimate));
 
-      if (electrumRef.current) {
-        if ((electrumRef.current as any).healthCheckInterval) {
-          clearInterval((electrumRef.current as any).healthCheckInterval);
-        }
-        electrumRef.current.disconnect();
-      }
-
       electrumRef.current = client;
-      setServerState(result.url);
-      setCurrentServerIndex(result.index);
+      setServerState(session.currentUrl || serversToTry[0]);
+      setCurrentServerIndex(session.currentIndex);
       setStatus('ready');
       setError(undefined);
 
@@ -730,38 +717,15 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         await refresh(client);
       });
 
-      const healthCheckInterval = setInterval(() => {
-        if (
-          !client.connected &&
-          !isReconnectingRef.current &&
-          walletRef.current &&
-          scripthashRef.current &&
-          !isLocked
-        ) {
-          clearInterval(healthCheckInterval);
-          isReconnectingRef.current = true;
-          setStatus('connecting');
-          reconnectTimeoutRef.current = setTimeout(async () => {
-            try {
-              await connect(true);
-            } catch {
-              setStatus('error');
-              setError('All Electrum servers unavailable');
-            } finally {
-              isReconnectingRef.current = false;
-            }
-          }, 2000);
-        }
-      }, 5000);
-
-      (client as any).healthCheckInterval = healthCheckInterval;
       updateActivity();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      disposeElectrum();
+      const e = toElectrumError(err);
       setStatus('error');
-      setError(err?.message || 'Failed to connect to all Electrum servers');
-      throw err;
+      setError(e.message);
+      throw e;
     }
-  }, [servers, server, currentServerIndex, isLocked, updateActivity, stage, refresh]);
+  }, [servers, server, isLocked, updateActivity, stage, refresh, disposeElectrum]);
 
   // Store connect function in ref after it's defined
   useEffect(() => {
@@ -997,8 +961,7 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setHistory([]);
     
     // Disconnect electrum but keep encrypted data
-    electrumRef.current?.disconnect();
-    electrumRef.current = null;
+    disposeElectrum();
     setStatus('disconnected');
     
     setIsLocked(true);
@@ -1009,7 +972,7 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       clearTimeout(activityTimeoutRef.current);
       activityTimeoutRef.current = undefined;
     }
-  }, []);
+  }, [disposeElectrum]);
 
   const getCurrentPrivateKey = useCallback((): string | undefined => {
     if (isLocked || !walletRef.current) {
