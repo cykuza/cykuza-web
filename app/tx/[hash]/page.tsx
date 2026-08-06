@@ -8,9 +8,8 @@ import { parseTransaction } from '@/lib/parsers';
 import { txHashSchema, truncateHash, formatSatoshi, parseBlockHeader } from '@/lib/utils';
 import { useElectrumExplorer } from '@/hooks/useElectrumExplorer';
 
-export default function TransactionPage({ params }: { params: Promise<{ hash: string }> | { hash: string } }) {
- // Handle both Promise and direct object cases
- const resolvedParams = params instanceof Promise ? use(params) : params;
+export default function TransactionPage({ params }: { params: Promise<{ hash: string }> }) {
+ const resolvedParams = use(params);
  const searchParams = useSearchParams();
  const network = (searchParams.get('network') || 'mainnet') as 'mainnet' | 'testnet';
  

@@ -8,27 +8,13 @@ import {
 } from '@/lib/electrum/rpc';
 import type { ScripthashHistoryEntry } from '@/lib/electrum/protocol';
 import { z } from 'zod';
-import * as bitcoin from 'bitcoinjs-lib';
-import { getNetwork } from '@/lib/cyberyenNetwork';
+import { addressToScriptHash } from '@/lib/wallet/crypto';
 
 const querySchema = z.object({
   address: z.string(),
   network: z.enum(['mainnet', 'testnet']).default('mainnet'),
 });
 
-function addressToScriptHash(address: string, networkType: 'mainnet' | 'testnet'): string {
-  const network = getNetwork(networkType);
-  let script: Buffer;
-  
-  try {
-    script = bitcoin.address.toOutputScript(address, network);
-  } catch (error) {
-    throw new Error('Invalid address format');
-  }
-
-  const hash = bitcoin.crypto.sha256(script);
-  return Buffer.from(hash.reverse()).toString('hex');
-}
 
 export async function GET(req: NextRequest) {
   try {
@@ -48,7 +34,12 @@ export async function GET(req: NextRequest) {
 
     addressSchema.parse(query.address);
 
-    const scriptHash = addressToScriptHash(query.address, query.network);
+    let scriptHash: string;
+    try {
+      scriptHash = addressToScriptHash(query.address, query.network);
+    } catch {
+      throw new Error('Invalid address format');
+    }
 
     // Get balance first (this usually works even for addresses with large history)
     let balance;

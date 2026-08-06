@@ -2,6 +2,8 @@
 
 A lightweight, non-custodial blockchain explorer and wallet for Cyberyen.
 
+**Version:** [1.1.0](docs/release/v1.1.0.md) · **Baseline:** [v1.0.0-pre-parity](docs/release/v1.0.0-pre-parity.md)
+
 ## Features
 
 ### Explorer
@@ -15,30 +17,31 @@ A lightweight, non-custodial blockchain explorer and wallet for Cyberyen.
 - **Mobile Responsive**: Fully responsive design for all devices
 
 ### Wallet
-- **Create New Wallet**: Generate a new wallet with a 12-word mnemonic phrase
-- **Import Wallet**: Import from mnemonic phrase or private key (WIF format)
+- **Create New Wallet**: Generate a new wallet with a 24-word mnemonic (12 optional); optional dice/hex entropy mix
+- **Import Wallet**: Import from 12 or 24 word mnemonic or private key (WIF format)
 - **Send Transactions**: Send Cyberyen (CY) with customizable fee rates
 - **Receive Addresses**: Generate and display receive addresses with QR codes
 - **Transaction History**: View complete transaction history with real-time updates
 - **Balance Display**: See confirmed and unconfirmed balances
-- **Password Protection**: Secure wallet sessions with AES-256-GCM encryption
-- **Session Management**: Automatic 10-minute idle timeout
-- **Multi-Server Support**: Automatic failover between multiple Electrum servers
+- **Password Protection**: Vault password ≥12; Argon2id + AES-256-GCM session vault
+- **Session Management**: Automatic 5-minute idle lock + lock when the tab hides
+- **Send Safeguards**: Last-6 address confirm, optional daily spend limit, large-send ack (domain-enforced)
+- **Multi-Server Support**: Automatic failover between Electrum servers, plus optional dual-server balance/UTXO fingerprint and broadcast txid verify (default on)
 
 ## Tech Stack
 
-- **Framework**: Next.js 14 (App Router)
+- **Framework**: Next.js 16 (App Router) + React 19
 - **Language**: TypeScript
 - **Styling**: Tailwind CSS
-- **Blockchain Libraries**: bitcoinjs-lib (customized for Cyberyen)
-- **Cryptography**: Web Crypto API (PBKDF2, AES-GCM)
+- **Blockchain Libraries**: bitcoinjs-lib 7, bip32 5, ecpair 3, `@scure/bip39` (exact pins — see [SECURITY.md](SECURITY.md))
+- **Cryptography**: Argon2id (`hash-wasm`) + AES-GCM for session vault; Web Crypto for legacy PBKDF2 open
 - **QR Codes**: qrcode.react
-- **Validation**: Zod
+- **Validation**: Zod 3
 
 ## Prerequisites
 
-- **Node.js**: 18+
-- **npm** or **yarn**
+- **Node.js**: 20.9+ (22 LTS recommended for CI)
+- **npm**
 - **Access to ElectrumX servers** for Cyberyen networks
 
 ## Quick Start
@@ -81,6 +84,15 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
+## Releases
+
+| Version | Notes |
+|---------|--------|
+| **1.1.0** (current) | [docs/release/v1.1.0.md](docs/release/v1.1.0.md) — security parity (W0–W7), Next 16, exact crypto pins |
+| **v1.0.0-pre-parity** | [docs/release/v1.0.0-pre-parity.md](docs/release/v1.0.0-pre-parity.md) — baseline @ `8a62944` ([GitHub Release](https://github.com/cykuza/cykuza-web/releases/tag/v1.0.0-pre-parity)) |
+
+Before cutting a GitHub release, run `npm run hash:release-inputs` and record the lockfile SHA-256 in the release body.
+
 ## API Endpoints
 
 All API endpoints are prefixed with `/api` and return JSON:
@@ -99,22 +111,13 @@ See `/api-docs` for complete API documentation.
 
 ## Security
 
-### Wallet Security
-- **Non-Custodial**: All wallet operations are client-side only
-- **AES-256-GCM Encryption**: Industry-standard encryption for wallet data
-- **PBKDF2 Password Hashing**: 100,000 iterations for password verification
-- **Rate Limiting**: Maximum 5 password unlock attempts with 15-minute lockout
-- **Session Storage Only**: No persistent storage - data cleared on browser close
-- **HTTPS Enforcement**: Automatic redirect from HTTP to HTTPS in production
-- **Content Security Policy**: Comprehensive CSP headers to prevent XSS attacks
+See [SECURITY.md](SECURITY.md) for the threat model, exact crypto pins, release integrity, and control details.
 
-### Security Headers
-- HSTS (Strict-Transport-Security)
-- X-Frame-Options: DENY
-- X-Content-Type-Options: nosniff
-- X-XSS-Protection
-- Referrer-Policy
-- Permissions-Policy
+### Highlights
+- **Non-custodial** session vault (Argon2id + AES-256-GCM); secrets never leave the browser
+- **5-minute** idle lock; password ≥12; unlock lockout after 5 failures
+- **Send safeguards** and **Electrum dual-server** verify (domain-enforced)
+- **HTTPS** redirect (`proxy.ts`) + CSP / HSTS in `next.config.js`
 
 ## Rate Limiting
 
@@ -125,73 +128,45 @@ All API endpoints are rate-limited to **10 requests per minute per IP address**.
 
 ## Development
 
-### Available Scripts
-
 ```bash
-# Development server
-npm run dev
-
-# Production build
-npm run build
-
-# Start production server
-npm start
-
-# Linting
-npm run lint
-
-# Type checking
-npm run type-check
+npm run dev      # development server
+npm run build    # production build
+npm start        # start production server
+npm run lint     # eslint
+npm test         # jest
+npm run hash:release-inputs   # lockfile SHA-256 + crypto pins
 ```
 
-### Testing
+CI (GitHub Actions) runs `npm audit --audit-level=high`, lint, test, and build on every PR. Dependency upgrades are **manual** — no Dependabot.
 
-```bash
-npm test
-```
+## Contributors
 
-## Important Notes
+See [docs/CONTRIBUTORS.md](docs/CONTRIBUTORS.md) for GitHub contacts.
 
-### Limitations
-- **Session-Based**: Wallet data is cleared when the browser is closed
-- **ElectrumX Required**: Requires access to Electrum servers
-- **Rate Limited**: API endpoints rate-limited to 10 requests/minute per IP
+| GitHub | Profile |
+|--------|---------|
+| digirayc | [github.com/digirayc](https://github.com/digirayc) |
+| cymich | [github.com/cymich](https://github.com/cymich) |
 
-### Best Practices
-- **Backup Your Mnemonic**: Always write down your mnemonic phrase in a secure location
-- **Use Strong Passwords**: Choose a strong password for wallet protection
-- **Verify Addresses**: Always verify addresses before sending transactions
-- **Check Fees**: Review transaction fees before confirming
+Org: [github.com/cykuza](https://github.com/cykuza)
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
-
 1. Fork the repository
 2. Create your feature branch (`git checkout -b feature/Feature`)
-3. Commit your changes (`git commit -m 'Add some Feature'`)
-4. Push to the branch (`git push origin feature/Feature`)
+3. Keep security logic in `lib/` domain modules (no UI-only gates)
+4. Run audit → lint → test → build
 5. Open a Pull Request
+
+Issues and PRs: [github.com/cykuza/cykuza-web](https://github.com/cykuza/cykuza-web)
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License — see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-- Built with [Next.js](https://nextjs.org/) and [TypeScript](https://www.typescriptlang.org/)
-- Uses [bitcoinjs-lib](https://github.com/bitcoinjs/bitcoinjs-lib) for Bitcoin/Cyberyen operations
-- [ElectrumX](https://electrumx.readthedocs.io/) protocol for blockchain data
-- [Tailwind CSS](https://tailwindcss.com/) for styling
-
-## Support
-
-For issues, questions, or contributions:
-- Open an issue on [GitHub](https://github.com/cykuza/cykuza-web/issues)
-- Check the documentation files
-- Review the security analysis
-
----
-
-**Version**: 1.0.0
-**Status**: Production Ready
+- [Next.js](https://nextjs.org/) and [TypeScript](https://www.typescriptlang.org/)
+- [bitcoinjs-lib](https://github.com/bitcoinjs/bitcoinjs-lib)
+- [ElectrumX](https://electrumx.readthedocs.io/)
+- [Tailwind CSS](https://tailwindcss.com/)

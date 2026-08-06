@@ -9,12 +9,20 @@ interface PrivateKeyViewProps {
 }
 
 export const PrivateKeyView: React.FC<PrivateKeyViewProps> = ({ onBack, onClose }) => {
-  const { getCurrentPrivateKey, address, unlockWallet, passwordError } = useWallet();
+  const { getCurrentPrivateKey, address, unlockWallet, passwordError, passphraseRequired } = useWallet();
   const [passwordConfirmed, setPasswordConfirmed] = useState(false);
   const [privateKey, setPrivateKey] = useState<string | null>(null);
   const [password, setPassword] = useState('');
+  const [passphrase, setPassphrase] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string>();
+
+  React.useEffect(() => {
+    return () => {
+      setPassword('');
+      setPassphrase('');
+    };
+  }, []);
 
   const handlePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -25,21 +33,28 @@ export const PrivateKeyView: React.FC<PrivateKeyViewProps> = ({ onBack, onClose 
       return;
     }
 
+    if (passphraseRequired && !passphrase.trim()) {
+      setError('Enter your BIP39 passphrase.');
+      return;
+    }
+
     try {
-      // Verify password by attempting to unlock (this will throw if password is wrong)
-      await unlockWallet(password);
-      // Get private key after successful unlock
+      await unlockWallet(password, passphraseRequired ? passphrase : undefined);
       const key = getCurrentPrivateKey();
       if (key) {
         setPrivateKey(key);
         setPasswordConfirmed(true);
+        setPassword('');
+        setPassphrase('');
         setError(undefined);
       } else {
         setError('Failed to retrieve private key');
       }
     } catch (err: any) {
-      const errorMsg = err.message || passwordError || 'Invalid password';
+      const errorMsg = err.message || passwordError || 'Unlock failed';
       setError(errorMsg);
+      setPassword('');
+      setPassphrase('');
     }
   };
 
@@ -82,6 +97,22 @@ export const PrivateKeyView: React.FC<PrivateKeyViewProps> = ({ onBack, onClose 
               </div>
             </div>
           </div>
+          {passphraseRequired && (
+            <div className="flex w-full flex-col justify-center gap-2 rounded-xl border border-white/7 bg-neutral-700 transition-colors focus-within:bg-neutral-600 focus-within:border-white/7 h-12 px-5 mt-3">
+              <input
+                autoComplete="off"
+                className="h-auto w-full truncate bg-transparent text-sm text-white outline-none focus:outline-none placeholder:text-neutral-200"
+                placeholder="BIP39 passphrase"
+                type="password"
+                name="passphrase"
+                value={passphrase}
+                onChange={(e) => {
+                  setPassphrase(e.target.value);
+                  setError(undefined);
+                }}
+              />
+            </div>
+          )}
           {error && (
             <p className="text-red-400 text-sm mt-2">{error}</p>
           )}

@@ -3,8 +3,12 @@
 import { useState, useMemo, useRef, useEffect, useCallback, FormEvent } from 'react';
 import { useWallet } from '@/context/WalletContext';
 import { satsToCyb, cybToSats, estimateFee } from '@/lib/wallet/transaction';
-
-const isValidCybAddress = (addr: string) => /^cy1[ac-hj-np-z02-9]{25,62}$/i.test(addr.trim());
+import { isValidAddress } from '@/lib/wallet/address';
+import {
+  ADDRESS_CONFIRM_SUFFIX_LENGTH,
+  addressConfirmSuffix,
+} from '@/lib/wallet/sendPolicy';
+import { trustBanner } from '@/lib/electrum/trustBanner';
 
 interface SendViewProps {
   onBack: () => void;
@@ -12,13 +16,30 @@ interface SendViewProps {
 }
 
 export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
-  const { send, feeRate, balance, isLocked, setFeeRate, address, getUtxos, unlockWallet, passwordError: walletPasswordError } = useWallet();
+  const {
+    send,
+    feeRate,
+    balance,
+    isLocked,
+    setFeeRate,
+    address,
+    getUtxos,
+    unlockWallet,
+    passwordError: walletPasswordError,
+    passphraseRequired,
+    networkType,
+    addressBook,
+    previewSendFlags,
+    chainOpsBlocked,
+    electrumTrust,
+  } = useWallet();
   const [to, setTo] = useState('');
   const [amount, setAmount] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [password, setPassword] = useState('');
+  const [passphrase, setPassphrase] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [passwordVerified, setPasswordVerified] = useState(false);
   const [passwordError, setPasswordError] = useState<string>();
@@ -28,10 +49,16 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
   const [showFeeRateModal, setShowFeeRateModal] = useState(false);
   const [customFeeRate, setCustomFeeRate] = useState('');
   const [utxos, setUtxos] = useState<Array<{ txid: string; vout: number; value: number }>>([]);
+  const [confirmSuffix, setConfirmSuffix] = useState('');
+  const [allowSpendLimitOnce, setAllowSpendLimitOnce] = useState(false);
+  const [acknowledgeLargeSend, setAcknowledgeLargeSend] = useState(false);
+  const [spendLimitExceeded, setSpendLimitExceeded] = useState(false);
+  const [largeSend, setLargeSend] = useState(false);
   const feeRateDropdownRef = useRef<HTMLDivElement>(null);
 
   const numericAmount = parseFloat(amount) || 0;
   const balanceCy = satsToCyb(balance.confirmed);
+  const bookForNetwork = addressBook.filter((e) => e.network === networkType);
   
   // Fetch UTXOs for fee estimation
   useEffect(() => {
@@ -83,9 +110,9 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
   const estimatedFeeCy = satsToCyb(feeEstimate.estimatedFee);
   const totalNeededCy = feeEstimate.totalNeeded > 0 ? satsToCyb(feeEstimate.totalNeeded) : 0;
 
-  // Validate address format
+  // Validate address format (network-aware)
   const trimmedTo = to.trim();
-  const isValidAddress = trimmedTo && isValidCybAddress(trimmedTo);
+  const addressOk = trimmedTo.length > 0 && isValidAddress(trimmedTo, networkType);
 
   // Check if balance is sufficient
   // If fee estimate is 0 (UTXOs not loaded), add a small buffer for fee estimation
@@ -99,7 +126,7 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
   const customFeeRateValid = feeRateOption !== 'custom' || (customFeeRate && !isNaN(parseFloat(customFeeRate)) && parseFloat(customFeeRate) > 0);
   
   // Form is valid if all conditions are met
-  const isFormValid = isValidAddress && numericAmount > 0 && !insufficient && !isLocked && customFeeRateValid;
+  const isFormValid = addressOk && numericAmount > 0 && !insufficient && !isLocked && customFeeRateValid;
 
   // Update fee rate based on selection
   useEffect(() => {
@@ -118,7 +145,7 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
   const handlePaste = async () => {
     try {
       const text = await navigator.clipboard.readText();
-      if (isValidCybAddress(text)) {
+      if (isValidAddress(text, networkType)) {
         setTo(text);
       }
     } catch (err) {
@@ -126,11 +153,11 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
     }
   };
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError(undefined);
-    if (!isValidCybAddress(to)) {
-      setError('Invalid Cyberyen bech32 address');
+    if (!isValidAddress(to, networkType)) {
+      setError('Invalid address for the selected network');
       return;
     }
     if (insufficient) {
@@ -139,8 +166,20 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
     }
     setShowConfirmation(true);
     setPassword('');
+    setPassphrase('');
     setPasswordVerified(false);
     setPasswordError(undefined);
+    setConfirmSuffix('');
+    setAllowSpendLimitOnce(false);
+    setAcknowledgeLargeSend(false);
+    try {
+      const flags = await previewSendFlags(to.trim(), numericAmount, includeFee);
+      setSpendLimitExceeded(flags.spendLimitExceeded);
+      setLargeSend(flags.largeSend);
+    } catch {
+      setSpendLimitExceeded(false);
+      setLargeSend(false);
+    }
   };
 
   const handlePasswordVerify = async (e: FormEvent) => {
@@ -152,14 +191,23 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
       return;
     }
 
+    if (passphraseRequired && !passphrase.trim()) {
+      setPasswordError('Enter your BIP39 passphrase.');
+      return;
+    }
+
     try {
-      await unlockWallet(password);
+      await unlockWallet(password, passphraseRequired ? passphrase : undefined);
       setPasswordVerified(true);
+      setPassword('');
+      setPassphrase('');
       setPasswordError(undefined);
     } catch (err: unknown) {
-      const errorMsg = err instanceof Error ? err.message : walletPasswordError || 'Invalid password';
+      const errorMsg = err instanceof Error ? err.message : walletPasswordError || 'Unlock failed';
       setPasswordError(errorMsg);
       setPasswordVerified(false);
+      setPassword('');
+      setPassphrase('');
     }
   };
 
@@ -168,12 +216,20 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
       setError('Please verify your password first');
       return;
     }
+    if (confirmSuffix.length < ADDRESS_CONFIRM_SUFFIX_LENGTH) {
+      setError(`Enter the last ${ADDRESS_CONFIRM_SUFFIX_LENGTH} characters of the recipient address`);
+      return;
+    }
     
     setBusy(true);
     try {
-      const res = await send(to.trim(), numericAmount, includeFee);
+      const res = await send(to.trim(), numericAmount, {
+        includeFee,
+        toConfirmSuffix: confirmSuffix,
+        allowSpendLimitOnce,
+        acknowledgeLargeSend,
+      });
       setTxid(res.txid);
-      // Reset form on success
       setTimeout(() => {
         setTo('');
         setAmount('');
@@ -182,6 +238,7 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
         setShowConfirmation(false);
         setPassword('');
         setPasswordVerified(false);
+        setConfirmSuffix('');
         onBack();
       }, 2000);
     } catch (err: unknown) {
@@ -197,6 +254,7 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
         // Go back to form step
         setShowConfirmation(false);
         setPassword('');
+        setPassphrase('');
         setPasswordVerified(false);
         setPasswordError(undefined);
       } else {
@@ -242,6 +300,8 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
     };
   }, [showFeeRateModal]);
 
+  const sendTrustBanner = trustBanner(electrumTrust, networkType);
+
   return (
     <>
       <div className="flex size-full flex-col gap-6 px-6 py-5 max-standard:min-h-screen relative">
@@ -249,6 +309,15 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
         <div className="flex flex-1 w-full flex-col gap-4 overflow-y-auto">
           {!showConfirmation ? (
             <form className="flex flex-1 w-full flex-col gap-6 min-h-0" onSubmit={handleSubmit}>
+            {sendTrustBanner && (
+              <p
+                className={`text-xs leading-relaxed ${
+                  sendTrustBanner.tone === 'danger' ? 'text-red-300' : 'text-amber-200'
+                }`}
+              >
+                {sendTrustBanner.message}
+              </p>
+            )}
             {/* Amount Field */}
             <div className="flex w-full flex-col gap-2">
               <div className="flex w-full flex-col gap-2 rounded-xl border border-white/7 bg-neutral-700 px-5 py-4 transition-colors focus-within:bg-neutral-600 focus-within:border-white/7">
@@ -296,6 +365,25 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
               {/* Receiver Address Field */}
               <div className="flex w-full flex-col gap-2">
                 <label className="font-medium text-neutral-200 text-xs">Receiver address</label>
+                {bookForNetwork.length > 0 && (
+                  <select
+                    className="h-10 px-3 rounded-xl border border-white/14 bg-neutral-800 text-sm text-neutral-200 outline-none"
+                    value=""
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        setTo(e.target.value);
+                        setError(undefined);
+                      }
+                    }}
+                  >
+                    <option value="">Address book…</option>
+                    {bookForNetwork.map((entry) => (
+                      <option key={entry.address} value={entry.address}>
+                        {entry.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <div className="flex w-full flex-col justify-center gap-2 rounded-xl border border-white/7 bg-neutral-700 transition-colors focus-within:bg-neutral-600 focus-within:border-white/7 h-12 px-5">
                   <div className="flex w-full items-center justify-between gap-2">
                     <input
@@ -473,8 +561,8 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
             {txid && <p className="text-sm text-green-400">Broadcasted txid: {txid}</p>}
             
             {/* Validation feedback */}
-            {!isValidAddress && to.trim() && (
-              <p className="text-red-400 text-sm">Invalid Cyberyen address format</p>
+            {!addressOk && to.trim() && (
+              <p className="text-red-400 text-sm">Invalid address for the selected network</p>
             )}
             {numericAmount > 0 && insufficient && (
               <p className="text-red-400 text-sm">
@@ -486,10 +574,10 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
             <div className="mt-auto pt-4 w-full">
               <button
                 className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl px-4 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:text-neutral-200 disabled:opacity-45 [&_svg]:pointer-events-none [&_svg]:size-4 border border-white/7 bg-neutral-800 text-white hover:bg-neutral-600 h-12 w-full"
-                disabled={!isFormValid || busy}
+                disabled={!isFormValid || busy || chainOpsBlocked}
                 type="submit"
               >
-                {busy ? 'Processing...' : 'Continue'}
+                {busy ? 'Processing...' : chainOpsBlocked ? 'Send blocked' : 'Continue'}
               </button>
             </div>
           </form>
@@ -508,8 +596,54 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
                   <div className="flex flex-col gap-2">
                     <span className="text-xs text-neutral-400">Recipient Address</span>
                     <span className="text-sm font-mono break-all text-neutral-200">{to.trim()}</span>
+                    <span className="text-xs text-neutral-500">
+                      Ends with …{addressConfirmSuffix(to.trim())}
+                    </span>
                   </div>
                 </div>
+
+                <div className="flex flex-col gap-2">
+                  <label className="text-sm font-medium text-neutral-200">
+                    Confirm last {ADDRESS_CONFIRM_SUFFIX_LENGTH} characters
+                  </label>
+                  <input
+                    type="text"
+                    value={confirmSuffix}
+                    onChange={(e) => {
+                      setConfirmSuffix(e.target.value.slice(-ADDRESS_CONFIRM_SUFFIX_LENGTH));
+                      setError(undefined);
+                    }}
+                    maxLength={ADDRESS_CONFIRM_SUFFIX_LENGTH}
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="h-11 px-3 rounded-xl border border-white/14 bg-neutral-800/75 text-sm text-white outline-none font-mono"
+                    placeholder={`Last ${ADDRESS_CONFIRM_SUFFIX_LENGTH} chars`}
+                  />
+                </div>
+
+                {spendLimitExceeded && (
+                  <label className="flex items-start gap-2 text-sm text-neutral-200">
+                    <input
+                      type="checkbox"
+                      checked={allowSpendLimitOnce}
+                      onChange={(e) => setAllowSpendLimitOnce(e.target.checked)}
+                      className="mt-1"
+                    />
+                    Allow exceeding the daily spend limit once for this send
+                  </label>
+                )}
+
+                {largeSend && (
+                  <label className="flex items-start gap-2 text-sm text-neutral-200">
+                    <input
+                      type="checkbox"
+                      checked={acknowledgeLargeSend}
+                      onChange={(e) => setAcknowledgeLargeSend(e.target.checked)}
+                      className="mt-1"
+                    />
+                    Acknowledge large send (more than half of confirmed balance)
+                  </label>
+                )}
 
                 {/* Password Input */}
                 {!passwordVerified ? (
@@ -550,6 +684,21 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
                           </div>
                         </div>
                       </div>
+                      {passphraseRequired && (
+                        <div className="flex w-full flex-col justify-center gap-2 rounded-xl border border-white/7 bg-neutral-700 transition-colors focus-within:bg-neutral-600 focus-within:border-white/7 h-12 px-5 mt-2">
+                          <input
+                            type="password"
+                            value={passphrase}
+                            onChange={(e) => {
+                              setPassphrase(e.target.value);
+                              setPasswordError(undefined);
+                            }}
+                            className="h-auto w-full truncate bg-transparent text-sm text-white outline-none focus:outline-none placeholder:text-neutral-200"
+                            placeholder="BIP39 passphrase"
+                            autoComplete="off"
+                          />
+                        </div>
+                      )}
                       {passwordError && (
                         <p className="text-sm text-red-400">{passwordError}</p>
                       )}
@@ -557,7 +706,7 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
                     <button
                       type="submit"
                       className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl px-4 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:text-neutral-200 disabled:opacity-45 border border-white/7 bg-neutral-800 text-white hover:bg-neutral-600 h-12 w-full"
-                      disabled={!password.trim() || busy}
+                      disabled={!password.trim() || (passphraseRequired && !passphrase.trim()) || busy}
                     >
                       Unlock Wallet
                     </button>
@@ -579,7 +728,13 @@ export const SendView = ({ onBack, onInternalBack }: SendViewProps) => {
                 <div className="mt-auto pt-4 w-full">
                   <button
                     onClick={confirmSend}
-                    disabled={busy}
+                    disabled={
+                      busy ||
+                      chainOpsBlocked ||
+                      confirmSuffix.length < ADDRESS_CONFIRM_SUFFIX_LENGTH ||
+                      (spendLimitExceeded && !allowSpendLimitOnce) ||
+                      (largeSend && !acknowledgeLargeSend)
+                    }
                     className={`inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl px-4 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-45 h-12 transition-all hover:opacity-100 w-full ${
                       busy
                         ? 'bg-neutral-800 text-neutral-200 opacity-45 cursor-not-allowed'

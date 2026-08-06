@@ -1,30 +1,27 @@
 const nextJest = require('next/jest')
 
 const createJestConfig = nextJest({
-  // Provide the path to your Next.js app to load next.config.js and .env files in your test environment
   dir: './',
 })
 
-// Add any custom config to be passed to Jest
+/** @type {import('jest').Config} */
 const customJestConfig = {
   setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
-  testEnvironment: 'jest-environment-jsdom',
+  // Wallet crypto tests run in Node; jsdom resolves uint8array-tools to ESM browser build.
+  testEnvironment: 'node',
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/$1',
+    '^uint8array-tools$':
+      '<rootDir>/node_modules/uint8array-tools/src/cjs/index.cjs',
   },
+  modulePathIgnorePatterns: ['<rootDir>/.next/'],
 }
 
-// createJestConfig is exported this way to ensure that next/jest can load the Next.js config which is async
-module.exports = createJestConfig(customJestConfig)
-
-
-
-
-
-
-
-
-
-
-
-
+module.exports = async () => {
+  const config = await createJestConfig(customJestConfig)()
+  // next/jest prepends its own ignore list; force-transform ESM crypto helpers.
+  config.transformIgnorePatterns = [
+    '/node_modules/(?!(uint8array-tools|@noble|@scure|@bitcoinerlab|bip32|ecpair|bitcoinjs-lib)/)',
+  ]
+  return config
+}

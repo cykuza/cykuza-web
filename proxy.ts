@@ -1,12 +1,16 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-export function middleware(request: NextRequest) {
-  // Force HTTPS in production
+/**
+ * Next.js 16 proxy (formerly middleware): force HTTPS in production.
+ * Runtime is nodejs; matcher is required.
+ */
+export function proxy(request: NextRequest) {
   if (process.env.NODE_ENV === 'production') {
-    const protocol = request.headers.get('x-forwarded-proto') || 
-                     (request.nextUrl.protocol === 'https:' ? 'https' : 'http');
-    
+    const protocol =
+      request.headers.get('x-forwarded-proto') ||
+      (request.nextUrl.protocol === 'https:' ? 'https' : 'http');
+
     if (protocol !== 'https') {
       const httpsUrl = new URL(request.url);
       httpsUrl.protocol = 'https:';
@@ -29,5 +33,3 @@ export const config = {
     '/((?!api|_next/static|_next/image|favicon.ico).*)',
   ],
 };
-
-

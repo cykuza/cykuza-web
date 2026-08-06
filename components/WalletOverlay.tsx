@@ -15,8 +15,11 @@ import { SendView } from '@/components/wallet/SendView';
 import { MnemonicView } from '@/components/wallet/MnemonicView';
 import { PrivateKeyView } from '@/components/wallet/PrivateKeyView';
 import { ServerConfigView } from '@/components/wallet/ServerConfigView';
+import { AddressBookView } from '@/components/wallet/AddressBookView';
+import { DailySpendView } from '@/components/wallet/DailySpendView';
 import { satsToCyb } from '@/lib/wallet/transaction';
 import { useWalletOverlay } from '@/context/WalletOverlayContext';
+import { trustBanner } from '@/lib/electrum/trustBanner';
 
 export default function WalletOverlay() {
  const router = useRouter();
@@ -33,13 +36,14 @@ export default function WalletOverlay() {
    importWallet,
    isLocked,
    requiresPassword,
+   passphraseRequired,
    passwordError,
    setPassword,
    unlockWallet,
    confirmPassword,
    confirmMnemonic,
-   pendingMnemonic,
-   pendingPassword,
+   isCreateEntropyFlow,
+   importType,
    networkType,
    lockWallet,
    goBack,
@@ -47,15 +51,23 @@ export default function WalletOverlay() {
    importFromPrivateKey,
    importMnemonicWithPassword,
    setStage,
-   setPendingMnemonic,
+   clearPendingSecrets,
    setImportType,
    getMnemonic,
+   getPendingMnemonic,
+   getPendingPassword,
+   getPendingCreateAddress,
    endSession,
-   updateActivity
+   updateActivity,
+   electrumTrust,
+   chainOpsBlocked,
   } = useWallet();
   const [info, setInfo] = useState<string>();
   const [showSettings, setShowSettings] = useState(false);
   const sendViewBackHandlerRef = useRef<(() => void) | null>(null);
+  const mnemonicInputBackHandlerRef = useRef<(() => void) | null>(null);
+  const mnemonicDisplayBackHandlerRef = useRef<(() => void) | null>(null);
+  const banner = trustBanner(electrumTrust, networkType);
 
  useEffect(() => {
   if (stage === 'ready') {
@@ -72,6 +84,11 @@ export default function WalletOverlay() {
  }, [stage, refresh]);
 
  if (!isOpen) return null;
+
+ const pendingMnemonic =
+  stage === 'mnemonic-display' ? getPendingMnemonic() : undefined;
+ const pendingCreateAddress =
+  stage === 'mnemonic-display' ? getPendingCreateAddress() : undefined;
 
  return (
   <>
@@ -105,9 +122,12 @@ export default function WalletOverlay() {
            } else if (stage === 'send' && sendViewBackHandlerRef.current) {
             // If SendView has an internal back handler (e.g., in confirmation step), use it
             sendViewBackHandlerRef.current();
-           } else if (stage === 'send' || stage === 'receive' || stage === 'server-config' || stage === 'mnemonic-view' || stage === 'private-key-view') {
-            // These stages should go back to ready (or settings if coming from settings)
-            if (stage === 'server-config' || stage === 'mnemonic-view' || stage === 'private-key-view') {
+           } else if (stage === 'mnemonic-input' && mnemonicInputBackHandlerRef.current) {
+            mnemonicInputBackHandlerRef.current();
+           } else if (stage === 'mnemonic-display' && mnemonicDisplayBackHandlerRef.current) {
+            mnemonicDisplayBackHandlerRef.current();
+           } else if (stage === 'send' || stage === 'receive' || stage === 'server-config' || stage === 'mnemonic-view' || stage === 'private-key-view' || stage === 'address-book' || stage === 'daily-spend') {
+            if (stage === 'server-config' || stage === 'mnemonic-view' || stage === 'private-key-view' || stage === 'address-book' || stage === 'daily-spend') {
              setStage('ready');
              setShowSettings(true);
             } else {
@@ -154,8 +174,12 @@ export default function WalletOverlay() {
           <span className="truncate font-medium text-sm text-white">Network</span>
         ) : stage === 'mnemonic-view' ? (
           <span className="truncate font-medium text-sm text-white">Confirm password</span>
-        ) : stage === 'private-key-view' ? (
+         ) : stage === 'private-key-view' ? (
           <span className="truncate font-medium text-sm text-white">Confirm password</span>
+         ) : stage === 'address-book' ? (
+          <span className="truncate font-medium text-sm text-white">Address book</span>
+         ) : stage === 'daily-spend' ? (
+          <span className="truncate font-medium text-sm text-white">Daily spend limit</span>
          ) : stage === 'send' ? (
           <span className="truncate font-medium text-sm text-white">Send</span>
          ) : stage === 'receive' ? (
@@ -260,7 +284,7 @@ export default function WalletOverlay() {
           onSelectPrivateKey={() => {
            // Set import type for private key and go to password creation
            setImportType('private-key');
-           setPendingMnemonic(null);
+           clearPendingSecrets();
            setStage('password-creation');
            setInfo(undefined);
           }}
@@ -270,9 +294,11 @@ export default function WalletOverlay() {
         {/* Password creation stage */}
         {stage === 'password-creation' && (
          <PasswordCreation
-          onConfirm={async (password) => {
+          showEntropyOptions={isCreateEntropyFlow}
+          allowPassphrase={importType !== 'private-key'}
+          onConfirm={async (password, entropy, passphrase) => {
            try {
-            await confirmPassword(password);
+            await confirmPassword(password, entropy, passphrase);
             setInfo(undefined);
            } catch (err: unknown) {
             setInfo(err instanceof Error ? err.message : 'Failed to set password');
@@ -286,11 +312,16 @@ export default function WalletOverlay() {
         )}
 
         {/* Mnemonic input stage (for import) */}
-        {stage === 'mnemonic-input' && pendingPassword && (
+        {stage === 'mnemonic-input' && (
          <MnemonicInput
+          onInternalBack={(handler) => {
+           mnemonicInputBackHandlerRef.current = handler;
+          }}
           onConfirm={async (mnemonic) => {
            try {
-            await importMnemonicWithPassword(mnemonic, pendingPassword);
+            const password = getPendingPassword();
+            if (!password) throw new Error('Missing password');
+            await importMnemonicWithPassword(mnemonic, password);
             setInfo(undefined);
            } catch (err: unknown) {
             setInfo(err instanceof Error ? err.message : 'Failed to import mnemonic');
@@ -300,9 +331,9 @@ export default function WalletOverlay() {
         )}
 
         {/* Private key import stage */}
-        {stage === 'private-key-import' && pendingPassword && (
+        {stage === 'private-key-import' && getPendingPassword() && (
          <PrivateKeyImport
-          password={pendingPassword}
+          password={getPendingPassword()!}
           onConfirm={async (privateKey, password) => {
            try {
             await importFromPrivateKey(privateKey, password);
@@ -318,10 +349,19 @@ export default function WalletOverlay() {
          />
         )}
 
-        {/* Mnemonic display stage */}
+        {/* Mnemonic display stage — parent ref is source of truth for the phrase */}
+        {stage === 'mnemonic-display' && !pendingMnemonic && (
+         <div className="p-3 rounded-xl border border-red-100/50 bg-red-200/10 text-red-100 text-sm">
+          Recovery phrase was lost before backup. Go back and create the wallet again.
+         </div>
+        )}
         {stage === 'mnemonic-display' && pendingMnemonic && (
          <MnemonicDisplay
           mnemonic={pendingMnemonic}
+          address={pendingCreateAddress}
+          onInternalBack={(handler) => {
+           mnemonicDisplayBackHandlerRef.current = handler;
+          }}
           onConfirm={async () => {
            try {
             await confirmMnemonic();
@@ -351,13 +391,7 @@ export default function WalletOverlay() {
 
         {/* Server Config state */}
         {stage === 'server-config' && (
-         <ServerConfigView
-          onBack={() => {
-           setStage('ready');
-           setShowSettings(true);
-          }}
-          onClose={close}
-         />
+         <ServerConfigView />
         )}
 
         {/* Mnemonic View state */}
@@ -382,6 +416,24 @@ export default function WalletOverlay() {
          />
         )}
 
+        {stage === 'address-book' && (
+         <AddressBookView
+          onBack={() => {
+           setStage('ready');
+           setShowSettings(true);
+          }}
+         />
+        )}
+
+        {stage === 'daily-spend' && (
+         <DailySpendView
+          onBack={() => {
+           setStage('ready');
+           setShowSettings(true);
+          }}
+         />
+        )}
+
         {/* Ready state: Show dashboard */}
         {stage === 'ready' && (
          <>
@@ -391,6 +443,7 @@ export default function WalletOverlay() {
             <PasswordLock
              isLocked={isLocked}
              requiresPassword={requiresPassword}
+             passphraseRequired={passphraseRequired}
              error={passwordError}
              onUnlock={unlockWallet}
              onSetPassword={setPassword}
@@ -462,6 +515,42 @@ export default function WalletOverlay() {
               </div>
              </button>
 
+             <button
+              type="button"
+              onClick={() => {
+               setShowSettings(false);
+               setStage('address-book');
+              }}
+              className="flex w-full items-center justify-between gap-4 px-3.5 py-4 text-left transition hover:bg-neutral-700 rounded-xl border border-white/7 bg-neutral-800"
+             >
+              <div className="flex min-w-0 items-center gap-3">
+               <div className="flex-1 truncate font-medium text-sm antialiased">Address book</div>
+              </div>
+              <div className="flex items-center gap-3.5">
+               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" aria-hidden="true" data-slot="icon" className="size-3 stroke-2 text-white">
+                <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"></path>
+               </svg>
+              </div>
+             </button>
+
+             <button
+              type="button"
+              onClick={() => {
+               setShowSettings(false);
+               setStage('daily-spend');
+              }}
+              className="flex w-full items-center justify-between gap-4 px-3.5 py-4 text-left transition hover:bg-neutral-700 rounded-xl border border-white/7 bg-neutral-800"
+             >
+              <div className="flex min-w-0 items-center gap-3">
+               <div className="flex-1 truncate font-medium text-sm antialiased">Daily spend limit</div>
+              </div>
+              <div className="flex items-center gap-3.5">
+               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" aria-hidden="true" data-slot="icon" className="size-3 stroke-2 text-white">
+                <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"></path>
+               </svg>
+              </div>
+             </button>
+
              {/* End Session Button */}
              <button
               type="button"
@@ -495,7 +584,30 @@ export default function WalletOverlay() {
                </div>
               </div>
              </div>
-             
+             {banner && (
+              <p
+               className={`text-xs leading-relaxed ${
+                banner.tone === 'danger' ? 'text-red-300' : 'text-amber-200'
+               }`}
+              >
+               {banner.message}
+              </p>
+             )}
+             <button
+              type="button"
+              disabled={chainOpsBlocked || status !== 'ready'}
+              onClick={async () => {
+               try {
+                await refresh();
+                setInfo(undefined);
+               } catch (err: unknown) {
+                setInfo(err instanceof Error ? err.message : 'Refresh failed');
+               }
+              }}
+              className="self-start text-xs text-neutral-300 underline-offset-2 hover:underline disabled:opacity-45 disabled:no-underline disabled:cursor-not-allowed"
+             >
+              Refresh balance
+             </button>
             </div>
             
             <div className="flex flex-col justify-start gap-1.5 px-3 font-medium text-lg">
@@ -520,7 +632,8 @@ export default function WalletOverlay() {
              </button>
              <button
               onClick={() => setStage('send')}
-              className="max-w-full truncate flex w-full items-center justify-start gap-3 rounded-xl px-3 py-4 font-medium text-white text-sm transition-colors cursor-pointer hover:bg-white/5"
+              disabled={chainOpsBlocked}
+              className="max-w-full truncate flex w-full items-center justify-start gap-3 rounded-xl px-3 py-4 font-medium text-white text-sm transition-colors cursor-pointer hover:bg-white/5 disabled:opacity-50 disabled:cursor-not-allowed"
              >
               <div className="flex items-center justify-center gap-3">
                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-arrow-up size-5 shrink-0 transition-colors">

@@ -322,7 +322,7 @@ export default function LatestBlocks({ network }: LatestBlocksProps) {
        </tr>
       ) : (
        blocks.map((block) => (
-        <tr key={block.height || `block-${block.hash || Math.random()}`} className="border-b border-white/14 hover:bg-neutral-700/50 transition-colors">
+        <tr key={block.height ?? block.hash ?? 'block-unknown'} className="border-b border-white/14 hover:bg-neutral-700/50 transition-colors">
          <td className="py-2 px-2 text-white">
           <Link
            href={`/block/${block.height}?network=${network}`}

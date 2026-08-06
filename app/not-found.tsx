@@ -1,3 +1,5 @@
+import Link from 'next/link';
+
 // Force dynamic rendering
 export const dynamic = 'force-dynamic';
 
@@ -9,14 +11,13 @@ export default function NotFound() {
     <p className="text-neutral-200 mb-4">
      The page you are looking for does not exist.
     </p>
-    <a
+    <Link
      href="/"
      className="inline-block px-4 py-2 rounded-xl border border-white/14 bg-neutral-800/75 text-white hover:bg-neutral-600 transition-colors"
     >
      Go Home
-    </a>
+    </Link>
    </div>
   </div>
  );
 }
-

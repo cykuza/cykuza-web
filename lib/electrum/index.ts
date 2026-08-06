@@ -38,3 +38,22 @@ export {
   getTransaction,
   getTxidFromPos,
 } from './rpc';
+
+export {
+  assessElectrumTrust,
+  assertElectrumTrustAllowsChainOps,
+  electrumTrustBlocksChainOps,
+  ElectrumTrustBlockedError,
+} from './electrumTrust';
+export type { ElectrumTrustLevel, ElectrumTrustInput } from './electrumTrust';
+export { chainFingerprint, chainFingerprintCanonical } from './fingerprint';
+export {
+  dualVerifyRefresh,
+  dualVerifyBroadcast,
+  ElectrumVerifyError,
+} from './dualVerify';
+export { trustBanner } from './trustBanner';
+export {
+  readVerifyWithSecondServer,
+  writeVerifyWithSecondServer,
+} from './trustPrefs';

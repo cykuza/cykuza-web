@@ -30,29 +30,78 @@ export class ElectrumClient {
     if (!url.startsWith('wss://')) {
       throw new Error('Use wss:// Electrum endpoints to avoid MITM.');
     }
+
+    // Tear down any prior socket before opening a new one.
+    this.teardownSocket();
     this.url = url;
     this.id = 0;
     this.pending.clear();
     this.subscriptions.clear();
 
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(url);
-      const handleOpen = () => resolve();
-      const handleError = () => reject(new Error('WebSocket connection error'));
-      this.ws?.addEventListener('open', handleOpen, { once: true });
-      this.ws?.addEventListener('error', handleError, { once: true });
-      this.ws?.addEventListener('message', this.onMessage);
-      this.ws?.addEventListener('close', () => this.reset());
+      let settled = false;
+      const ws = new WebSocket(url);
+      this.ws = ws;
+
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        fn();
+      };
+
+      const handleOpen = () => {
+        ws.removeEventListener('close', handleCloseBeforeOpen);
+        if (ws.readyState !== WebSocket.OPEN) {
+          settle(() => reject(new Error('Not connected to Electrum server')));
+          return;
+        }
+        // Persist close handling only after a successful handshake.
+        ws.addEventListener('close', this.onSocketClose);
+        settle(() => resolve());
+      };
+
+      const handleError = () => {
+        settle(() => reject(new Error('WebSocket connection error')));
+      };
+
+      const handleCloseBeforeOpen = () => {
+        this.resetPending('Disconnected');
+        settle(() => reject(new Error('Not connected to Electrum server')));
+      };
+
+      ws.addEventListener('open', handleOpen, { once: true });
+      ws.addEventListener('error', handleError, { once: true });
+      ws.addEventListener('close', handleCloseBeforeOpen, { once: true });
+      ws.addEventListener('message', this.onMessage);
     });
   }
 
   disconnect(): void {
-    this.ws?.close();
-    this.reset();
+    this.teardownSocket();
   }
 
-  private reset() {
-    this.pending.forEach(({ reject }) => reject(new Error('Disconnected')));
+  private onSocketClose = () => {
+    this.resetPending('Disconnected');
+    this.ws = undefined;
+  };
+
+  private teardownSocket() {
+    const ws = this.ws;
+    if (ws) {
+      ws.removeEventListener('message', this.onMessage);
+      ws.removeEventListener('close', this.onSocketClose);
+      try {
+        ws.close();
+      } catch {
+        // ignore
+      }
+    }
+    this.resetPending('Disconnected');
+    this.ws = undefined;
+  }
+
+  private resetPending(reason: string) {
+    this.pending.forEach(({ reject }) => reject(new Error(reason)));
     this.pending.clear();
     this.subscriptions.clear();
   }
@@ -74,7 +123,6 @@ export class ElectrumClient {
       }
     } catch (err) {
       // SECURITY: Only log parse errors, never wallet data
-      // eslint-disable-next-line no-console
       console.error('Electrum parse error');
     }
   };

@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { useWallet } from '@/context/WalletContext';
-import * as bip39 from 'bip39';
+import { validateMnemonic } from '@/lib/wallet/crypto';
 
 interface MnemonicViewProps {
   onBack: () => void;
@@ -10,11 +10,19 @@ interface MnemonicViewProps {
 }
 
 export const MnemonicView: React.FC<MnemonicViewProps> = ({ onBack, onClose }) => {
-  const { getMnemonic, unlockWallet, passwordError } = useWallet();
+  const { getMnemonic, unlockWallet, passwordError, passphraseRequired } = useWallet();
   const [passwordConfirmed, setPasswordConfirmed] = useState(false);
   const [password, setPassword] = useState('');
+  const [passphrase, setPassphrase] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string>();
+
+  React.useEffect(() => {
+    return () => {
+      setPassword('');
+      setPassphrase('');
+    };
+  }, []);
 
   const handlePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -25,14 +33,22 @@ export const MnemonicView: React.FC<MnemonicViewProps> = ({ onBack, onClose }) =
       return;
     }
 
+    if (passphraseRequired && !passphrase.trim()) {
+      setError('Enter your BIP39 passphrase.');
+      return;
+    }
+
     try {
-      // Verify password by attempting to unlock (this will throw if password is wrong)
-      await unlockWallet(password);
+      await unlockWallet(password, passphraseRequired ? passphrase : undefined);
       setPasswordConfirmed(true);
+      setPassword('');
+      setPassphrase('');
       setError(undefined);
     } catch (err: any) {
-      const errorMsg = err.message || passwordError || 'Invalid password';
+      const errorMsg = err.message || passwordError || 'Unlock failed';
       setError(errorMsg);
+      setPassword('');
+      setPassphrase('');
     }
   };
 
@@ -75,6 +91,22 @@ export const MnemonicView: React.FC<MnemonicViewProps> = ({ onBack, onClose }) =
               </div>
             </div>
           </div>
+          {passphraseRequired && (
+            <div className="flex w-full flex-col justify-center gap-2 rounded-xl border border-white/7 bg-neutral-700 transition-colors focus-within:bg-neutral-600 focus-within:border-white/7 h-12 px-5 mt-3">
+              <input
+                autoComplete="off"
+                className="h-auto w-full truncate bg-transparent text-sm text-white outline-none focus:outline-none placeholder:text-neutral-200"
+                placeholder="BIP39 passphrase"
+                type="password"
+                name="passphrase"
+                value={passphrase}
+                onChange={(e) => {
+                  setPassphrase(e.target.value);
+                  setError(undefined);
+                }}
+              />
+            </div>
+          )}
           {error && (
             <p className="text-red-400 text-sm mt-2">{error}</p>
           )}
@@ -112,7 +144,7 @@ export const MnemonicView: React.FC<MnemonicViewProps> = ({ onBack, onClose }) =
   
   // Check if the stored value is actually a valid mnemonic
   // (For private key imports, the private key is stored in mnemonic ref)
-  const isValidMnemonic = bip39.validateMnemonic(mnemonic);
+  const isValidMnemonic = validateMnemonic(mnemonic);
   
   // If not a valid mnemonic, show error message
   if (!isValidMnemonic) {
@@ -146,7 +178,7 @@ export const MnemonicView: React.FC<MnemonicViewProps> = ({ onBack, onClose }) =
             <path fill="currentColor" d="M0 5c0-2.761 2.455-5 5.484-5h10.968c3.028 0 5.483 2.239 5.483 5v10c0 2.761-2.455 5-5.483 5H5.484C2.455 20 0 17.761 0 15zm5.484-3c-1.817 0-3.29 1.343-3.29 3v10c0 1.657 1.473 3 3.29 3h10.968c1.817 0 3.29-1.343 3.29-3V5c0-1.657-1.473-3-3.29-3z"></path>
             <path fill="currentColor" d="M10.979 5c.605 0 1.097.448 1.097 1v4c0 .552-.492 1-1.097 1-.606 0-1.097-.448-1.097-1V6c0-.552.491-1 1.097-1M9.87 14c0-.552.491-1 1.097-1h.01c.606 0 1.098.448 1.098 1s-.492 1-1.097 1h-.011c-.606 0-1.097-.448-1.097-1"></path>
           </svg>
-          Write these 12 words in the correct order and keep them in a secure place.
+          Write these words in the correct order and keep them in a secure place.
         </div>
 
         {/* Mnemonic Words Grid */}

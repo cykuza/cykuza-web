@@ -21,9 +21,8 @@ interface AddressData {
  historyError?: string;
 }
 
-export default function AddressPage({ params }: { params: Promise<{ addr: string }> | { addr: string } }) {
- // Handle both Promise and direct object cases
- const resolvedParams = params instanceof Promise ? use(params) : params;
+export default function AddressPage({ params }: { params: Promise<{ addr: string }> }) {
+ const resolvedParams = use(params);
  const searchParams = useSearchParams();
  const network = (searchParams.get('network') || 'mainnet') as 'mainnet' | 'testnet';
  
@@ -294,13 +293,15 @@ export default function AddressPage({ params }: { params: Promise<{ addr: string
       {paginatedHistory.map((item, index) => {
        const globalIndex = (page - 1) * pageSize + index;
        return (
-        <Link
+        <div
          key={`${item.tx_hash}-${globalIndex}`}
-         href={`/tx/${item.tx_hash}?network=${network}`}
          className="flex w-full flex-col rounded-2xl bg-neutral-800/75 font-mono border border-white/14 hover:bg-neutral-700/30 transition-colors"
         >
          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-4 px-4 sm:px-5 py-3 sm:py-4">
-          <div className="flex w-full sm:flex-1 items-center gap-2 min-w-0">
+          <Link
+           href={`/tx/${item.tx_hash}?network=${network}`}
+           className="flex w-full sm:flex-1 items-center gap-2 min-w-0"
+          >
            <span className="text-neutral-400 text-xs min-w-[2.5rem] sm:min-w-[3rem]">#{globalIndex + 1}</span>
            <div className="flex items-center gap-1.5 flex-1 min-w-0">
             <span className="text-neutral-200 text-xs whitespace-nowrap">ID:</span>
@@ -308,7 +309,7 @@ export default function AddressPage({ params }: { params: Promise<{ addr: string
              {truncateHash(item.tx_hash, 5, 5)}
             </span>
            </div>
-          </div>
+          </Link>
           <div className="flex flex-col sm:flex-row items-start sm:items-end gap-1.5 sm:gap-3 w-full sm:w-auto">
            {item.fee !== undefined && (
             <div className="flex items-center gap-1.5">
@@ -324,7 +325,6 @@ export default function AddressPage({ params }: { params: Promise<{ addr: string
              <Link
               href={`/block/${item.height}?network=${network}`}
               className="text-neutral-100 hover:text-white text-xs whitespace-nowrap"
-              onClick={(e) => e.stopPropagation()}
              >
               {item.height}
              </Link>
@@ -332,7 +332,7 @@ export default function AddressPage({ params }: { params: Promise<{ addr: string
            )}
           </div>
          </div>
-        </Link>
+        </div>
        );
       })}
      </div>

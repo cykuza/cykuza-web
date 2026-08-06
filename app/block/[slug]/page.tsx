@@ -225,9 +225,9 @@ async function findBlockHeightByHash(
  return null;
 }
 
-export default function BlockPage({ params }: { params: Promise<{ slug: string }> | { slug: string } }) {
+export default function BlockPage({ params }: { params: Promise<{ slug: string }> }) {
  // Handle both Promise and direct object cases
- const resolvedParams = params instanceof Promise ? use(params) : params;
+ const resolvedParams = use(params);
  const searchParams = useSearchParams();
  const network = (searchParams.get('network') || 'mainnet') as 'mainnet' | 'testnet';
  
