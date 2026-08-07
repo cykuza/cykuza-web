@@ -103,7 +103,7 @@ export default function WalletOverlay() {
    <div
     role="dialog"
     aria-labelledby="wallet-title"
-    className="fixed z-50 gap-4 shadow-lg transition ease-in-out inset-y-0 right-0 h-full w-full sm:w-3/4 sm:max-w-sm border-l border-none bg-transparent p-3 max-[640px]:p-0 overflow-y-auto"
+    className="fixed z-50 gap-4 shadow-lg transition ease-in-out inset-y-0 right-0 h-full w-full max-w-sm border-l border-none bg-transparent p-3 max-[640px]:p-0 overflow-y-auto"
     tabIndex={-1}
     style={{ pointerEvents: 'auto' }}
    >
