@@ -28,6 +28,10 @@ A lightweight, non-custodial blockchain explorer and wallet for Cyberyen.
 - **Send Safeguards**: Last-6 address confirm, optional daily spend limit, large-send ack (domain-enforced)
 - **Multi-Server Support**: Automatic failover between Electrum servers, plus optional dual-server balance/UTXO fingerprint and broadcast txid verify (default on)
 
+### Extension & Privacy
+- **Extension page** (`/extension`): install / source links for the Cykuza browser wallet
+- **Privacy** (`/privacy`): public privacy policy for the site and extension
+
 ## Tech Stack
 
 - **Framework**: Next.js 16 (App Router) + React 19

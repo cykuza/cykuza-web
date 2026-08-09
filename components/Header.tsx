@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { isBlockHeight, isHex } from '@/lib/utils';
 import { useWalletOverlay } from '@/context/WalletOverlayContext';
 import { useWallet } from '@/context/WalletContext';
+import { ExtensionBrowserMarks } from '@/components/BrowserBrandIcons';
 
 type NetworkType = 'mainnet' | 'testnet';
 
@@ -215,7 +216,7 @@ export default function Header() {
        </form>
       </div>
 
-      {/* Right side: Search button (mobile), API and Wallet buttons */}
+      {/* Right side: Search button (mobile), Extension, API and Wallet */}
       <div className="flex items-center gap-2 md:gap-3.5">
        {/* Mobile Search Button */}
        <button
@@ -228,6 +229,14 @@ export default function Header() {
          <path d="m21 21-4.35-4.35"></path>
         </svg>
        </button>
+
+       <Link
+        href="/extension"
+        aria-label="Extension"
+        className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl px-3 md:px-4 text-sm font-medium transition-all border border-white/7 bg-neutral-800 text-white hover:bg-neutral-600 h-10 md:h-12 opacity-80 hover:opacity-100 shrink-0"
+       >
+        <ExtensionBrowserMarks size={16} />
+       </Link>
        
        <Link
         href="/api-docs"

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { WarningGate } from '@/components/wallet/WarningGate';
 import { PasswordLock } from '@/components/wallet/PasswordLock';
 import { PasswordCreation } from '@/components/wallet/PasswordCreation';
@@ -266,6 +267,13 @@ export default function WalletOverlay() {
            >
             Import Wallet
            </button>
+           <Link
+            href="/extension"
+            onClick={close}
+            className="inline-flex items-center justify-center text-sm text-neutral-200 hover:text-white transition-colors py-1"
+           >
+            Download browser extension
+           </Link>
           </div>
          </div>
         )}

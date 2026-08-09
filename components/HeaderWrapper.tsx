@@ -57,6 +57,16 @@ export default function HeaderWrapper() {
          <path d="m21 21-4.35-4.35"></path>
         </svg>
        </button>
+       <div
+        className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl px-3 md:px-4 text-sm font-medium transition-all border border-white/7 bg-neutral-800 text-white h-10 md:h-12 opacity-80 shrink-0"
+        aria-hidden="true"
+       >
+        <span className="inline-flex items-center gap-1.5">
+         <span className="block w-4 h-4 rounded-full bg-white/20" />
+         <span className="text-neutral-200">/</span>
+         <span className="block w-4 h-4 rounded-full bg-white/20" />
+        </span>
+       </div>
        <div className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl px-3 md:px-4 text-sm font-medium transition-all border border-white/7 bg-neutral-800 text-white h-10 md:h-12 opacity-80 shrink-0">
         <span className="hidden sm:inline">API</span>
         <span className="sm:hidden">
