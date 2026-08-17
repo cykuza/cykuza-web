@@ -75,7 +75,7 @@ export default function ExtensionPage() {
       </a>
      </div>
      <p className="text-neutral-200 text-sm mt-4">
-      Store listings coming soon. Until then, install from the GitHub repository (Chromium or Firefox build).
+      Install from the Chrome Web Store or Firefox Add-ons. Source builds are also available on GitHub.
      </p>
     </section>
 

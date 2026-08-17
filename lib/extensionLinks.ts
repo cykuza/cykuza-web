@@ -2,8 +2,8 @@
 
 export const EXTENSION_REPO_URL = 'https://github.com/cykuza/cykuza-extension';
 
-/** Until store listings exist, Chromium installs use the GitHub repo. */
-export const EXTENSION_CHROME_URL = EXTENSION_REPO_URL;
+export const EXTENSION_CHROME_URL =
+ 'https://chromewebstore.google.com/detail/cykuza-wallet/aphkhoflgnclocigombjohkfbagablph';
 
-/** Until store listings exist, Firefox installs use the GitHub repo. */
-export const EXTENSION_FIREFOX_URL = EXTENSION_REPO_URL;
+export const EXTENSION_FIREFOX_URL =
+ 'https://addons.mozilla.org/firefox/addon/cykuza-wallet/';
