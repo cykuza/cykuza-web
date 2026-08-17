@@ -25,7 +25,7 @@ Repository: [github.com/cykuza/cykuza-web](https://github.com/cykuza/cykuza-web)
 1. Fork the repository
 2. Create a feature branch
 3. Keep changes focused; follow existing `lib/` domain patterns (no UI-only security gates)
-4. Run `npm audit --audit-level=high`, `npm run lint`, `npm test`, `npm run build`
+4. Run `npm run check` (audit → lint → test → build). A pre-push hook runs the same command after `npm install`.
 5. Open a PR against `master`
 
 Dependency upgrades are **manual** (no Dependabot). See [SECURITY.md](../SECURITY.md).

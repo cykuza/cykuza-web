@@ -76,7 +76,9 @@ Cykuza Web is a **non-custodial hot wallet** and blockchain explorer. Private ke
   | `hash-wasm` | `4.12.0` |
 
 - Do **not** use `npm audit fix --force` to jump majors. Prefer deliberate upgrades and, if unavoidable, `overrides` documented here with a reason.
-- Current `overrides`: `uint8array-tools@0.0.9` — unify nested 0.0.8/0.0.9 so bitcoinjs-lib 7 gets `writeInt64` (required for PSBT signing).
+- Current `overrides`:
+  - `uint8array-tools@0.0.9` — unify nested 0.0.8/0.0.9 so bitcoinjs-lib 7 gets `writeInt64` (required for PSBT signing).
+  - `nanoid@3.3.18` — PostCSS pulls `nanoid@^3.3.16`; pin past GHSA-2v37-7h3g-55p8 (infinite loop on `size === 0`).
 - Never add `.npmrc` audit suppressions or Dependabot config.
 
 ## Release integrity (W6)

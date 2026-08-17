@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+# Same gates as .github/workflows/ci.yml — fail locally instead of on GitHub.
+set -e
+cd "$(git rev-parse --show-toplevel)"
+npm run check

@@ -138,10 +138,11 @@ npm run build    # production build
 npm start        # start production server
 npm run lint     # eslint
 npm test         # jest
+npm run check    # same as CI: audit (high) → lint → test → build
 npm run hash:release-inputs   # lockfile SHA-256 + crypto pins
 ```
 
-CI (GitHub Actions) runs `npm audit --audit-level=high`, lint, test, and build on every PR. Dependency upgrades are **manual** — no Dependabot.
+`npm install` installs a **pre-push** hook (`scripts/git-hooks/pre-push`) that runs `npm run check`. Skip only if you must: `git push --no-verify` (not for `master`). CI on GitHub still runs the same four steps. Dependency upgrades are **manual** — no Dependabot.
 
 ## Contributors
 
@@ -159,7 +160,7 @@ Org: [github.com/cykuza](https://github.com/cykuza)
 1. Fork the repository
 2. Create your feature branch (`git checkout -b feature/Feature`)
 3. Keep security logic in `lib/` domain modules (no UI-only gates)
-4. Run audit → lint → test → build
+4. Run audit → lint → test → build (`npm run check`; pre-push hook after `npm install`)
 5. Open a Pull Request
 
 Issues and PRs: [github.com/cykuza/cykuza-web](https://github.com/cykuza/cykuza-web)

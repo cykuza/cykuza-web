@@ -13,6 +13,8 @@
     "start": "next start",
     "lint": "eslint .",
     "test": "jest",
+    "check": "npm audit --audit-level=high && npm run lint && npm test && npm run build",
+    "prepare": "node scripts/install-git-hooks.mjs",
     "hash:release-inputs": "node scripts/hash-release-inputs.mjs"
   },
   "dependencies": {
@@ -51,6 +53,7 @@
     "utf-8-validate": "^6.0.5"
   },
   "overrides": {
-    "uint8array-tools": "0.0.9"
+    "uint8array-tools": "0.0.9",
+    "nanoid": "3.3.18"
   }
 }
